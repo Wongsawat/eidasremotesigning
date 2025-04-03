@@ -21,3 +21,10 @@ logging:
   level:
     org.springframework.security: DEBUG
     com.wpanther: DEBUG
+
+app:
+  keystore:
+    # Base directory for storing keystores
+    base-path: ${KEYSTORE_PATH:/app/keystores}
+    # Optional - permission settings when creating directories
+    directory-permissions: rwx------

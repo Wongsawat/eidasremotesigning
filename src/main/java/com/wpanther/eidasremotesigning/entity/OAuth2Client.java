@@ -20,7 +20,7 @@ public class OAuth2Client {
     @Id
     private String id;
 
-    @Column(nullable = false)
+    @Column(name = "client_id", nullable = false)
     private String clientId;
 
     @Column(nullable = false, length = 1000)

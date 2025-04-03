@@ -38,20 +38,22 @@ public class AuthorizationServerConfig {
     public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http) throws Exception {
         OAuth2AuthorizationServerConfigurer authorizationServerConfigurer = new OAuth2AuthorizationServerConfigurer();
         authorizationServerConfigurer
-                .oidc(oidc -> oidc.clientRegistrationEndpoint(clientRegistration -> {}));
+                .oidc(oidc -> oidc.clientRegistrationEndpoint(clientRegistration -> {
+                }));
 
         // Get the request matcher from the configurer
         RequestMatcher authorizationServerEndpointsMatcher = authorizationServerConfigurer.getEndpointsMatcher();
 
         return http
-                .securityMatcher(authorizationServerEndpointsMatcher)  // Only apply this config to OAuth2 endpoints
-                .with(authorizationServerConfigurer, security -> {})
+                .securityMatcher(authorizationServerEndpointsMatcher) // Only apply this config to OAuth2 endpoints
+                .with(authorizationServerConfigurer, security -> {
+                })
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint(new LoginUrlAuthenticationEntryPoint("/login")))
-                .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> {}))
+                .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> {
+                }))
                 .build();
     }
-
 
     @Bean
     @Order(2)
@@ -60,10 +62,12 @@ public class AuthorizationServerConfig {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/client-registration", "/h2-console/**").permitAll()
                         .anyRequest().authenticated())
-                .csrf(csrf -> csrf.ignoringRequestMatchers("/client-registration", "/h2-console/**"))
-                .headers(headers ->
-                        headers.contentSecurityPolicy(csp ->
-                                csp.policyDirectives("frame-ancestors 'self'")))
+                .csrf(csrf -> csrf
+                        .ignoringRequestMatchers("/client-registration", "/h2-console/**")
+                        .ignoringRequestMatchers("/certificates/**") // Disable CSRF for certificate API
+                        .ignoringRequestMatchers("/oauth2/**")) // Disable CSRF for OAuth endpoints
+                .headers(
+                        headers -> headers.contentSecurityPolicy(csp -> csp.policyDirectives("frame-ancestors 'self'")))
                 .formLogin(Customizer.withDefaults());
 
         return http.build();
@@ -119,4 +123,3 @@ public class AuthorizationServerConfig {
         return AuthorizationServerSettings.builder().build();
     }
 }
-
