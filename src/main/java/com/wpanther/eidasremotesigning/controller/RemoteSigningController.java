@@ -1,5 +1,6 @@
 package com.wpanther.eidasremotesigning.controller;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -34,6 +35,6 @@ public class RemoteSigningController {
             @Valid @RequestBody DigestSigningRequest request) {
         log.debug("Received digest signing request for certificate ID: {}", request.getCertificateId());
         DigestSigningResponse response = remoteSigningService.signDigest(request);
-        return ResponseEntity.ok(response);
+        return new ResponseEntity<>(response, HttpStatus.CREATED); // Changed from OK to CREATED
     }
 }
