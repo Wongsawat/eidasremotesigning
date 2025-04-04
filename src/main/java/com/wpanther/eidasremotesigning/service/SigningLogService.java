@@ -41,7 +41,7 @@ public class SigningLogService {
         signingLog.setStatus("SUCCESS");
         signingLog.setSignatureAlgorithm(signatureAlgorithm);
         
-        signingLogRepository.save(signingLog);
+        signingLogRepository.saveAndFlush(signingLog);
         log.info("Logged successful signing operation with ID: {}", signingLog.getId());
     }
     
@@ -54,7 +54,7 @@ public class SigningLogService {
         signingLog.setStatus("FAILED");
         signingLog.setErrorMessage(errorMessage);
         
-        signingLogRepository.save(signingLog);
+        signingLogRepository.saveAndFlush(signingLog);
         log.warn("Logged failed signing operation with ID: {}", signingLog.getId());
     }
     
