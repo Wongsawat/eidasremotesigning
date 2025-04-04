@@ -46,6 +46,7 @@ public class SigningCertificate {
     @JoinColumn(name = "client_id", referencedColumnName = "client_id", insertable = false, updatable = false)
     private OAuth2Client client;
 
+
     @Column(nullable = false)
     private Instant createdAt;
 

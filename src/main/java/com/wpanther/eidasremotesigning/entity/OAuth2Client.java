@@ -47,4 +47,7 @@ public class OAuth2Client {
 
     @Column
     private Instant updatedAt;
+
+    @OneToMany(mappedBy = "client", cascade = CascadeType.ALL, orphanRemoval = true)
+    private Set<SigningCertificate> certificates;
 }

@@ -1,0 +1,31 @@
+# Test configuration for integration tests
+# src/test/resources/application-test.yml
+
+server:
+  port: 0 # Use random port for tests
+
+spring:
+  datasource:
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: password
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+  h2:
+    console:
+      enabled: true
+
+logging:
+  level:
+    org.springframework.security: INFO
+    com.wpanther: DEBUG
+    org.hibernate.SQL: DEBUG
+
+# Use a temporary directory for keystores during testing
+app:
+  keystore:
+    base-path: ${java.io.tmpdir}/test-keystores

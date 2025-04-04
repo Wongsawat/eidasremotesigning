@@ -116,6 +116,9 @@ public class SigningLogService {
     private String getCurrentClientId() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         
+        // Add debugging to see what authentication type is available
+        log.debug("Authentication type: {}", authentication != null ? authentication.getClass().getName() : "null");
+        
         if (authentication instanceof JwtAuthenticationToken) {
             JwtAuthenticationToken jwtAuth = (JwtAuthenticationToken) authentication;
             return jwtAuth.getName();
