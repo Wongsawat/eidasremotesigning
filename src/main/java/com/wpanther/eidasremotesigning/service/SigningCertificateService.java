@@ -387,7 +387,7 @@ public class SigningCertificateService {
     /**
      * Loads an X509Certificate from a PKCS12 keystore
      */
-    private X509Certificate loadCertificateFromKeystore(SigningCertificate cert) throws Exception {
+    public X509Certificate loadCertificateFromKeystore(SigningCertificate cert) throws Exception {
         KeyStore keyStore = KeyStore.getInstance("PKCS12");
         try (FileInputStream fis = new FileInputStream(cert.getKeystorePath())) {
             keyStore.load(fis, cert.getKeystorePassword().toCharArray());
