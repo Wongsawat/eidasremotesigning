@@ -28,3 +28,18 @@ app:
     base-path: ${KEYSTORE_PATH:/app/keystores}
     # Optional - permission settings when creating directories
     directory-permissions: rwx------
+  
+  # PKCS#11 Configuration
+  pkcs11:
+    # PKCS#11 provider to use
+    provider: SunPKCS11
+    # Name for the provider instance
+    name: SoftHSM
+    # Path to PKCS#11 library - adjust based on installation
+    library-path: ${PKCS11_LIB_PATH:/usr/lib/softhsm/libsofthsm2.so}
+    # Slot index to use 
+    slot-list-index: 0
+    # Whether to use a config file instead of programmatic config
+    use-config-file: false
+    # Path to config file if use-config-file is true
+    config-file: classpath:pkcs11.cfg

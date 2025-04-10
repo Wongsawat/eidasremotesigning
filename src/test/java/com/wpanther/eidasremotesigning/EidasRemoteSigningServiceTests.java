@@ -22,11 +22,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.util.*;
 
@@ -36,7 +32,6 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @SpringBootTest
-@ActiveProfiles("test")
 @AutoConfigureMockMvc
 public class EidasRemoteSigningServiceTests {
 
@@ -48,6 +43,9 @@ public class EidasRemoteSigningServiceTests {
 
     @Mock
     private SigningCertificateService signingCertificateService;
+    
+    @Mock
+    private PKCS11Service pkcs11Service;
 
     @Mock
     private RemoteSigningService remoteSigningService;
@@ -145,17 +143,13 @@ public class EidasRemoteSigningServiceTests {
     //----------------------------------------------------------------------
     // Certificate Management Tests
     //----------------------------------------------------------------------
-
+    
     @Test
-    public void testCreateCertificate_Success() {
+    public void testAssociatePkcs11Certificate_Success() {
         // Arrange
-        CertificateCreateRequest request = CertificateCreateRequest.builder()
-                .subjectDN("CN=Test User, O=Test Organization, C=US")
-                .keyAlgorithm("RSA")
-                .keySize(2048)
-                .validityMonths(12)
-                .description("Test certificate")
-                .selfSigned(true)
+        Pkcs11CertificateAssociateRequest request = Pkcs11CertificateAssociateRequest.builder()
+                .certificateAlias("test-certificate")
+                .description("Test PKCS#11 certificate")
                 .build();
 
         CertificateDetailResponse expectedResponse = CertificateDetailResponse.builder()
@@ -169,6 +163,7 @@ public class EidasRemoteSigningServiceTests {
                 .notAfter(Instant.now().plusSeconds(365 * 24 * 60 * 60))
                 .active(true)
                 .selfSigned(true)
+                .storageType("PKCS11")
                 .createdAt(Instant.now())
                 .build();
 
@@ -176,89 +171,45 @@ public class EidasRemoteSigningServiceTests {
         mockClientAuthentication("test-client");
 
         // Mock service
-        when(signingCertificateService.createCertificate(any(CertificateCreateRequest.class)))
+        when(signingCertificateService.associatePkcs11Certificate(any(Pkcs11CertificateAssociateRequest.class)))
                 .thenReturn(expectedResponse);
 
         // Act
-        ResponseEntity<CertificateDetailResponse> response = certificateController.createCertificate(request);
+        ResponseEntity<CertificateDetailResponse> response = certificateController.associatePkcs11Certificate(request);
 
         // Assert
         assertEquals(HttpStatus.CREATED, response.getStatusCode());
         assertNotNull(response.getBody());
         assertEquals("test-cert-id", response.getBody().getId());
+        assertEquals("PKCS11", response.getBody().getStorageType());
     }
 
-@Test
-public void testCreateCertificate_MissingRequiredFields() {
-    // Arrange
-    CertificateCreateRequest request = CertificateCreateRequest.builder()
-            // Missing required subjectDN
-            .keyAlgorithm("RSA")
-            .keySize(2048)
-            .validityMonths(12)
-            .build();
-
-    // Mock authentication
-    mockClientAuthentication("test-client");
-
-    // Mock service to throw exception when validation fails
-    when(signingCertificateService.createCertificate(any(CertificateCreateRequest.class)))
-            .thenThrow(new CertificateException("Subject DN is required"));
-
-    // Act & Assert
-    assertThrows(CertificateException.class, () -> {
-        certificateController.createCertificate(request);
-    });
-}
-
     @Test
-    public void testCreateCertificate_ClientLimitExceeded() {
+    public void testListPkcs11Certificates_Success() {
         // Arrange
-        CertificateCreateRequest request = CertificateCreateRequest.builder()
-                .subjectDN("CN=Test User, O=Test Organization, C=US")
-                .keyAlgorithm("RSA")
-                .keySize(2048)
-                .validityMonths(12)
-                .description("Test certificate")
-                .selfSigned(true)
-                .build();
+        List<Pkcs11CertificateInfo> expectedCertificates = new ArrayList<>();
+        expectedCertificates.add(Pkcs11CertificateInfo.builder()
+                .alias("cert-1")
+                .subjectDN("CN=Test User 1")
+                .issuerDN("CN=Test CA")
+                .serialNumber("123")
+                .hasPrivateKey(true)
+                .build());
 
         // Mock authentication
         mockClientAuthentication("test-client");
 
-        // Mock service to throw exception
-        when(signingCertificateService.createCertificate(any(CertificateCreateRequest.class)))
-                .thenThrow(new CertificateException("Maximum number of certificates reached for this client"));
+        // Mock service
+        when(signingCertificateService.listPkcs11Certificates()).thenReturn(expectedCertificates);
 
-        // Act & Assert
-        assertThrows(CertificateException.class, () -> {
-            certificateController.createCertificate(request);
-        });
-    }
+        // Act
+        ResponseEntity<List<Pkcs11CertificateInfo>> response = certificateController.listPkcs11Certificates();
 
-    @Test
-    public void testCreateCertificate_InvalidKeySize() {
-        // Arrange
-        CertificateCreateRequest request = CertificateCreateRequest.builder()
-                .subjectDN("CN=Test User, O=Test Organization, C=US")
-                .keyAlgorithm("RSA")
-                .keySize(1024) // Below eIDAS minimum requirement
-                .validityMonths(12)
-                .description("Test certificate")
-                .selfSigned(true)
-                .build();
-
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Act & Assert - Implementation would need to validate key size
-        // This test might vary based on your validation approach
-        when(signingCertificateService.createCertificate(any(CertificateCreateRequest.class)))
-                .thenThrow(new CertificateException("RSA key size is below eIDAS minimum requirement of 2048 bits"));
-
-        assertThrows(CertificateException.class, () -> {
-            certificateController.createCertificate(request);
-        });
+        // Assert
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals(1, response.getBody().size());
+        assertEquals("cert-1", response.getBody().get(0).getAlias());
     }
 
     @Test
@@ -270,12 +221,14 @@ public void testCreateCertificate_MissingRequiredFields() {
                 .subjectDN("CN=Test User 1")
                 .serialNumber("123")
                 .active(true)
+                .storageType("PKCS11")
                 .build());
         certificates.add(CertificateSummary.builder()
                 .id("cert-2")
                 .subjectDN("CN=Test User 2")
                 .serialNumber("456")
                 .active(true)
+                .storageType("PKCS11")
                 .build());
 
         CertificateListResponse expectedResponse = CertificateListResponse.builder()
@@ -307,6 +260,7 @@ public void testCreateCertificate_MissingRequiredFields() {
                 .issuerDN("CN=Test User")
                 .serialNumber("123456789")
                 .active(true)
+                .storageType("PKCS11")
                 .build();
 
         // Mock authentication
@@ -353,6 +307,7 @@ public void testCreateCertificate_MissingRequiredFields() {
                 .subjectDN("CN=Test User")
                 .description("Updated description")
                 .active(false)
+                .storageType("PKCS11")
                 .build();
 
         // Mock authentication
@@ -420,7 +375,6 @@ public void testCreateCertificate_MissingRequiredFields() {
         ResponseEntity<DigestSigningResponse> response = signingController.signDigest(request);
 
         // Assert
-        // Note: This would be changed to CREATED in the fix
         assertEquals(HttpStatus.CREATED, response.getStatusCode());
         assertNotNull(response.getBody());
         assertEquals("test-signature-value", response.getBody().getSignatureValue());
@@ -519,22 +473,6 @@ public void testCreateCertificate_MissingRequiredFields() {
     }
 
     //----------------------------------------------------------------------
-    // Integration Tests with Real Crypto Operations
-    //----------------------------------------------------------------------
-
-    @Test
-    public void testFullSigningFlow() throws Exception {
-        // This is a more comprehensive integration test that would:
-        // 1. Create a client
-        // 2. Create a certificate
-        // 3. Sign a digest
-        // 4. Verify logs are created
-        
-        // Note: This would be implemented in a real integration test environment
-        // with actual crypto operations rather than mocks
-    }
-
-    //----------------------------------------------------------------------
     // Helper Methods for Tests
     //----------------------------------------------------------------------
 
@@ -551,13 +489,4 @@ public void testCreateCertificate_MissingRequiredFields() {
         SecurityContextHolder.setContext(securityContext);
     }
 
-    private X509Certificate createMockCertificate() throws Exception {
-        // This would generate a real test certificate for integration tests
-        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("RSA");
-        keyPairGenerator.initialize(2048);
-        KeyPair keyPair = keyPairGenerator.generateKeyPair();
-        
-        // Would implement actual certificate creation here
-        return mock(X509Certificate.class);
-    }
 }

@@ -1,146 +1,142 @@
-# eIDAS Remote Signing Service
+# eIDAS Remote Signing Service with PKCS#11 HSM Support
 
-A Java Spring Boot application that implements an eIDAS-compliant remote signing service for XAdES and PAdES signatures. This service allows clients to remotely sign document digests that can be incorporated into advanced electronic signatures.
+This service provides remote signing capabilities that comply with the eIDAS regulation, now with support for PKCS#11 Hardware Security Modules (HSMs).
 
-## Features
+## Key Features
 
-- OAuth2 authentication for secure API access
-- Client registration API for automated onboarding
-- Certificate management (create, list, update, delete)
-- Remote signing of document digests for XAdES and PAdES
-- eIDAS compliance checks for algorithms and key sizes
-- Secure key storage with per-client isolation
+- **PKCS#11 HSM Integration**: Support for hardware or software-based HSMs through the PKCS#11 interface
+- **OAuth2 Authentication**: Client authentication using the OAuth2 client credentials flow
+- **eIDAS Compliance**: Ensures all signatures meet eIDAS requirements
+- **Certificate Management**: Register and manage certificates stored in HSMs
+- **Remote Signing**: Sign document digests remotely using certificates in the HSM
+- **Logging and Auditing**: Comprehensive logging for compliance and auditing purposes
 
-## Technologies
+## Architecture Changes
 
-- Java 17
-- Spring Boot 3.4.4
-- Spring Security with OAuth2 Authorization Server
-- Spring Data JPA with H2 Database (can be replaced with any JDBC database)
-- EU Digital Signature Services (DSS) library for eIDAS compliance
-- Bouncy Castle for cryptographic operations
-- Lombok for reducing boilerplate code
+The application has been updated to support PKCS#11 HSMs with the following changes:
+
+1. **PKCS#11 Provider Configuration**: Added configuration to load PKCS#11 providers (default is SoftHSM).
+
+2. **Certificate Storage**: Certificates can now be stored in either:
+   - PKCS#11 Hardware Security Modules (preferred)
+   - Legacy PKCS#12 keystore files (for backward compatibility)
+
+3. **PIN Management**: User PIN is now provided in the request header for HSM operations.
+
+4. **Client Registration**: OAuth client registration is now separate from certificate association.
 
 ## Getting Started
 
 ### Prerequisites
 
-- JDK 17 or higher
-- Maven 3.6 or higher
-- Git
+- Java 17 or higher
+- Maven
+- SoftHSM (for testing) or other PKCS#11-compatible HSM
+- PKCS#11 library for your HSM
 
-### Building the Application
+### Installation
 
 1. Clone the repository
-   ```bash
-   git clone https://github.com/your-organization/eidasremotesigning.git
-   cd eidasremotesigning
+2. Build with Maven:
    ```
-
-2. Build the application
-   ```bash
-   mvn clean package
+   mvn clean install
    ```
-
-3. Run the application
-   ```bash
-   java -jar target/eidasremotesigning-0.0.1-SNAPSHOT.jar
-   ```
-
-The application will start on port 9000 by default.
 
 ### Configuration
 
-The application can be configured using the `application.yml` file. Key configuration properties include:
+Configure your application.yml with your HSM details:
 
-- `server.port`: The HTTP port for the application (default: 9000)
-- `app.keystore.base-path`: Directory for storing client keystores
-- `app.keystore.directory-permissions`: POSIX permissions for keystore directories
-
-## API Documentation
-
-### Client Registration
-
-```
-POST /client-registration
-Content-Type: application/json
-
-{
-  "clientName": "My Client",
-  "scopes": ["signing"],
-  "grantTypes": ["client_credentials"]
-}
+```yaml
+app:
+  pkcs11:
+    provider: SunPKCS11
+    name: SoftHSM
+    library-path: /usr/lib/softhsm/libsofthsm2.so
+    slot-list-index: 0
+    use-config-file: false
 ```
 
-### Authentication
+For detailed instructions on setting up SoftHSM, refer to the [SoftHSM Setup Guide](SoftHSM-Setup-Guide.md).
 
-```
-POST /oauth2/token
-Content-Type: application/x-www-form-urlencoded
-Authorization: Basic {base64(client_id:client_secret)}
+## Usage
 
-grant_type=client_credentials&scope=signing
-```
+### 1. Register an OAuth2 Client
 
-### Certificate Management
-
-```
-POST /certificates
-GET /certificates
-GET /certificates/{certificateId}
-PUT /certificates/{certificateId}
-DELETE /certificates/{certificateId}
+```bash
+curl -X POST http://localhost:9000/client-registration \
+  -H "Content-Type: application/json" \
+  -d '{
+    "clientName": "My Application",
+    "scopes": ["signing"],
+    "grantTypes": ["client_credentials"]
+  }'
 ```
 
-### Remote Signing
+Response includes `clientId` and `clientSecret` that you'll need for authentication.
 
-```
-POST /api/v1/signing/digest
-Content-Type: application/json
-Authorization: Bearer {access_token}
+### 2. Get an OAuth2 Token
 
-{
-  "certificateId": "cert-uuid",
-  "digestValue": "base64-encoded-digest",
-  "digestAlgorithm": "SHA-256",
-  "signatureType": "XADES"
-}
+```bash
+curl -X POST http://localhost:9000/oauth2/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "Authorization: Basic $(echo -n client_id:client_secret | base64)" \
+  -d "grant_type=client_credentials&scope=signing"
 ```
 
-For detailed API documentation, see the [API Documentation](docs/API.md).
+### 3. List Available Certificates in HSM
+
+```bash
+curl -X GET http://localhost:9000/certificates/pkcs11 \
+  -H "Authorization: Bearer your_token" \
+  -H "X-HSM-PIN: your_pin"
+```
+
+### 4. Associate a Certificate with Your Client
+
+```bash
+curl -X POST http://localhost:9000/certificates/pkcs11/associate \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_token" \
+  -H "X-HSM-PIN: your_pin" \
+  -d '{
+    "certificateAlias": "your-certificate-alias",
+    "description": "My signing certificate"
+  }'
+```
+
+### 5. Sign a Document Digest
+
+```bash
+curl -X POST http://localhost:9000/api/v1/signing/digest \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_token" \
+  -H "X-HSM-PIN: your_pin" \
+  -d '{
+    "certificateId": "your-certificate-id",
+    "digestValue": "base64_encoded_digest",
+    "digestAlgorithm": "SHA-256",
+    "signatureType": "XADES"
+  }'
+```
 
 ## Security Considerations
 
-- In production, use a secure database instead of H2
-- Configure proper SSL/TLS for HTTPS
-- Store keystore passwords encrypted in the database
-- Implement proper key ceremony procedures for production certificates
-- Regular security audits and key rotation
+1. **HSM PIN Protection**: The HSM PIN is transmitted in the HTTP header. In production, use HTTPS with mutual TLS authentication.
 
-## eIDAS Compliance
+2. **PIN Policies**: Configure PIN policies on your HSM according to your security requirements.
 
-The service implements the following to ensure eIDAS compliance:
+3. **Certificate Access Control**: Only associated clients can access certificates, but the physical HSM should also implement access controls.
 
-- Only allows secure hash algorithms (SHA-256, SHA-384, SHA-512)
-- Enforces minimum RSA key size of 2048 bits
-- Validates certificates before each signing operation
-- Supports only eIDAS-compliant signature formats (XAdES, PAdES)
-- Implements secure key storage with appropriate isolation
+## Using Other HSMs
 
-## Contributing
+To use a different HSM, update the `library-path` in the configuration to point to your PKCS#11 library. You might also need to customize the PKCS#11 provider configuration based on your HSM's requirements.
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+## Running the Sample Client
 
-## License
+A sample client is provided to demonstrate how to use the service with a PKCS#11 HSM:
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+```
+java -cp target/eidasremotesigning-0.0.1-SNAPSHOT.jar com.wpanther.eidasremotesigning.client.PKCS11SampleClient
+```
 
-## Acknowledgments
-
-- [EU DSS Library](https://github.com/esig/dss) for eIDAS-compliant signing capabilities
-- Spring Boot and Spring Security teams for their excellent frameworks
-- Bouncy Castle for cryptographic implementations
+Make sure to update the client with your credentials and HSM PIN before running.

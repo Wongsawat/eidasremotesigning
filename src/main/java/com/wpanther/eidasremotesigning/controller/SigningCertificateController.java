@@ -1,5 +1,7 @@
 package com.wpanther.eidasremotesigning.controller;
 
+import java.util.List;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -15,28 +17,56 @@ import com.wpanther.eidasremotesigning.dto.CertificateCreateRequest;
 import com.wpanther.eidasremotesigning.dto.CertificateDetailResponse;
 import com.wpanther.eidasremotesigning.dto.CertificateListResponse;
 import com.wpanther.eidasremotesigning.dto.CertificateUpdateRequest;
+import com.wpanther.eidasremotesigning.dto.Pkcs11CertificateAssociateRequest;
+import com.wpanther.eidasremotesigning.dto.Pkcs11CertificateInfo;
 import com.wpanther.eidasremotesigning.service.SigningCertificateService;
 
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * REST controller for certificate management operations
  * All endpoints require authentication
  */
-
 @RestController
 @RequestMapping("/certificates")
 @RequiredArgsConstructor
+@Slf4j
 public class SigningCertificateController {
 
     private final SigningCertificateService signingCertificateService;
 
+    /**
+     * List available certificates in PKCS#11 token
+     */
+    @GetMapping("/pkcs11")
+    public ResponseEntity<List<Pkcs11CertificateInfo>> listPkcs11Certificates() {
+        log.debug("Listing certificates in PKCS#11 token");
+        List<Pkcs11CertificateInfo> certificates = signingCertificateService.listPkcs11Certificates();
+        return ResponseEntity.ok(certificates);
+    }
+    
+    /**
+     * Associate an existing PKCS#11 certificate with the client
+     */
+    @PostMapping("/pkcs11/associate")
+    public ResponseEntity<CertificateDetailResponse> associatePkcs11Certificate(
+            @Valid @RequestBody Pkcs11CertificateAssociateRequest request) {
+        log.debug("Associating PKCS#11 certificate with alias: {}", request.getCertificateAlias());
+        CertificateDetailResponse response = signingCertificateService.associatePkcs11Certificate(request);
+        return new ResponseEntity<>(response, HttpStatus.CREATED);
+    }
+
+    /**
+     * Legacy endpoint for creating PKCS#12 certificates
+     * Kept for backward compatibility
+     */
     @PostMapping
     public ResponseEntity<CertificateDetailResponse> createCertificate(
             @Valid @RequestBody CertificateCreateRequest request) {
-        CertificateDetailResponse response = signingCertificateService.createCertificate(request);
-        return new ResponseEntity<>(response, HttpStatus.CREATED);
+        log.warn("Legacy PKCS#12 certificate creation requested - use PKCS#11 endpoints for new certificates");
+        throw new UnsupportedOperationException("Legacy certificate creation is disabled - use PKCS#11 certificates");
     }
 
     @GetMapping

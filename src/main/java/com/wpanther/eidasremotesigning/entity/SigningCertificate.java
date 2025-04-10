@@ -23,17 +23,29 @@ public class SigningCertificate {
     @Column(length = 255)
     private String description;
 
-    // Path to the PKCS12 keystore file in the filesystem
+    // Storage type - PKCS11 or PKCS12 (for backward compatibility)
     @Column(nullable = false)
+    private String storageType;
+    
+    // Certificate alias (label) in the PKCS#11 token
+    @Column(nullable = false)
+    private String certificateAlias;
+
+    // Path to keystore file - only used if storageType is PKCS12
+    @Column
     private String keystorePath;
     
-    // Password used to protect the keystore (should be encrypted in production)
-    @Column(nullable = false)
+    // Password for keystore - only used if storageType is PKCS12
+    @Column
     private String keystorePassword;
 
-    // Certificate alias in the keystore (typically the serial number)
-    @Column(nullable = false)
-    private String keystoreAlias;
+    // Provider name for PKCS#11 (e.g., "SunPKCS11-SoftHSM")
+    @Column
+    private String providerName;
+    
+    // Slot ID for PKCS#11
+    @Column
+    private Integer slotId;
 
     @Column(nullable = false)
     private boolean active;
@@ -45,7 +57,6 @@ public class SigningCertificate {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "client_id", referencedColumnName = "client_id", insertable = false, updatable = false)
     private OAuth2Client client;
-
 
     @Column(nullable = false)
     private Instant createdAt;

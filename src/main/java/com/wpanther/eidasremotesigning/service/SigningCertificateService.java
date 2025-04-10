@@ -2,74 +2,67 @@ package com.wpanther.eidasremotesigning.service;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.math.BigInteger;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.PosixFilePermissions;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
 import java.security.KeyStore;
-import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
-import java.security.PublicKey;
-import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
-import java.security.interfaces.ECPublicKey;
-import java.security.interfaces.RSAPublicKey;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.Base64;
-import java.util.Date;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-import org.bouncycastle.asn1.x500.X500Name;
-import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
-import org.bouncycastle.cert.X509CertificateHolder;
-import org.bouncycastle.cert.X509v3CertificateBuilder;
-import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
-import org.bouncycastle.operator.ContentSigner;
-import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
-import com.wpanther.eidasremotesigning.dto.CertificateCreateRequest;
 import com.wpanther.eidasremotesigning.dto.CertificateDetailResponse;
 import com.wpanther.eidasremotesigning.dto.CertificateListResponse;
+import com.wpanther.eidasremotesigning.dto.CertificateResponse;
 import com.wpanther.eidasremotesigning.dto.CertificateSummary;
 import com.wpanther.eidasremotesigning.dto.CertificateUpdateRequest;
+import com.wpanther.eidasremotesigning.dto.Pkcs11CertificateAssociateRequest;
+import com.wpanther.eidasremotesigning.dto.Pkcs11CertificateInfo;
 import com.wpanther.eidasremotesigning.entity.SigningCertificate;
 import com.wpanther.eidasremotesigning.exception.CertificateException;
 import com.wpanther.eidasremotesigning.repository.OAuth2ClientRepository;
 import com.wpanther.eidasremotesigning.repository.SigningCertificateRepository;
 
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class SigningCertificateService {
 
     private final SigningCertificateRepository certificateRepository;
     private final OAuth2ClientRepository oauth2ClientRepository;
+    private final PKCS11Service pkcs11Service;
     
     @Value("${app.keystore.base-path:/app/keystores}")
     private String keystoreBasePath;
     
-    @Value("${app.keystore.directory-permissions:rwx------}")
-    private String directoryPermissions;
+    private static final String PIN_HEADER = "X-HSM-PIN";
     
+    /**
+     * Lists all certificates from PKCS#11 token
+     */
+    public List<Pkcs11CertificateInfo> listPkcs11Certificates() {
+        String pin = getPinFromHeader();
+        return pkcs11Service.listCertificates(pin);
+    }
+    
+    /**
+     * Associates an existing PKCS#11 certificate with a client
+     */
     @Transactional
-    public CertificateDetailResponse createCertificate(CertificateCreateRequest request) {
+    public CertificateDetailResponse associatePkcs11Certificate(Pkcs11CertificateAssociateRequest request) {
         try {
             // Get client ID from authentication or context
             String clientId = getCurrentClientId();
@@ -79,71 +72,23 @@ public class SigningCertificateService {
                 throw new CertificateException("Invalid OAuth2 client ID. Client does not exist.");
             }
             
-            // Optional: Check if the client has reached the maximum allowed certificates
-            // This is configurable based on your business rules
-            long clientCertCount = certificateRepository.countByClientId(clientId);
-            if (clientCertCount >= 10) { // Example limit
-                throw new CertificateException("Maximum number of certificates reached for this client");
+            // Verify certificate exists in the HSM
+            String pin = getPinFromHeader();
+            X509Certificate certificate = pkcs11Service.getCertificate(request.getCertificateAlias(), pin);
+            
+            // Verify private key is available
+            if (!pkcs11Service.validateCertificateAndKey(request.getCertificateAlias(), pin)) {
+                throw new CertificateException("Private key not found for certificate with alias: " + request.getCertificateAlias());
             }
             
-            // Default values if not provided
-            String keyAlgorithm = request.getKeyAlgorithm() != null ? 
-                                  request.getKeyAlgorithm() : "RSA";
-            int keySize = request.getKeySize() != null ? 
-                         request.getKeySize() : 2048;
-            
-            // Generate key pair
-            KeyPair keyPair = generateKeyPair(keyAlgorithm, keySize);
-            
-            // Create certificate
-            Instant notBefore = Instant.now();
-            Instant notAfter = notBefore.plus(request.getValidityMonths() * 30L, ChronoUnit.DAYS);
-            
-            X509Certificate certificate;
-            
-            if (request.isSelfSigned()) {
-                certificate = generateSelfSignedCertificate(
-                    keyPair, 
-                    request.getSubjectDN(), 
-                    notBefore, 
-                    notAfter
-                );
-            } else {
-                // For CA-signed certificates, we'd need to create a CSR and have it signed
-                // by the CA certificate referenced by issuerCertificateId
-                // This is a simplified version that just creates another self-signed cert
-                throw new CertificateException("Non-self-signed certificates are not implemented yet");
-            }
-            
-            // Create a random password for the keystore
-            String keystorePassword = generateKeystorePassword();
-            
-            // Generate a unique filename for the keystore
-            String keystoreFileName = clientId + "_" + UUID.randomUUID().toString() + ".p12";
-            
-            // Ensure the keystore directory exists with proper permissions
-            Path keystoreDir = ensureKeystoreDirectory(clientId);
-            Path keystorePath = keystoreDir.resolve(keystoreFileName);
-            
-            // Store the certificate's serial number to use as the keystore alias
-            String keystoreAlias = certificate.getSerialNumber().toString();
-            
-            // Create and save the PKCS12 keystore to file
-            createPkcs12KeystoreFile(
-                keyPair.getPrivate(), 
-                certificate, 
-                keystorePassword,
-                keystoreAlias,
-                keystorePath.toString()
-            );
-            
-            // Create entity with minimal information, relying on the keystore for certificate details
+            // Create entity for the certificate association
             SigningCertificate certEntity = SigningCertificate.builder()
                 .id(UUID.randomUUID().toString())
                 .description(request.getDescription())
-                .keystorePath(keystorePath.toString())
-                .keystorePassword(keystorePassword) // In production, encrypt this password
-                .keystoreAlias(keystoreAlias)
+                .storageType("PKCS11")
+                .certificateAlias(request.getCertificateAlias())
+                .providerName(pkcs11Service.getProviderName())
+                .slotId(request.getSlotId())
                 .active(true)
                 .clientId(clientId)
                 .createdAt(Instant.now())
@@ -151,9 +96,9 @@ public class SigningCertificateService {
                 
             certificateRepository.save(certEntity);
             
-            return mapToDetailResponse(certEntity);
+            return mapToDetailResponse(certEntity, certificate);
         } catch (Exception e) {
-            throw new CertificateException("Failed to create certificate: " + e.getMessage(), e);
+            throw new CertificateException("Failed to associate PKCS#11 certificate: " + e.getMessage(), e);
         }
     }
     
@@ -174,11 +119,40 @@ public class SigningCertificateService {
     
     @Transactional(readOnly = true)
     public CertificateDetailResponse getCertificate(String certificateId) {
+        CertificateResponse response = getCertificateWithX509(certificateId);
+        return response.getDetailResponse();
+    }
+    
+    /**
+     * Gets a certificate with its X509Certificate object
+     * Internal method used by other services
+     */
+    @Transactional(readOnly = true)
+    public CertificateResponse getCertificateWithX509(String certificateId) {
         String clientId = getCurrentClientId();
         SigningCertificate certificate = certificateRepository.findByIdAndClientId(certificateId, clientId)
             .orElseThrow(() -> new CertificateException("Certificate not found"));
-            
-        return mapToDetailResponse(certificate);
+        
+        // Load certificate details
+        X509Certificate x509Cert;
+        if ("PKCS11".equals(certificate.getStorageType())) {
+            // For PKCS#11, load from token
+            String pin = getPinFromHeader();
+            x509Cert = pkcs11Service.getCertificate(certificate.getCertificateAlias(), pin);
+        } else {
+            // For PKCS#12, load from file
+            try {
+                x509Cert = loadCertificateFromKeystore(certificate);
+            } catch (Exception e) {
+                throw new CertificateException("Failed to load certificate: " + e.getMessage(), e);
+            }
+        }
+        
+        CertificateDetailResponse detailResponse = mapToDetailResponse(certificate, x509Cert);
+        return CertificateResponse.builder()
+            .detailResponse(detailResponse)
+            .x509Certificate(x509Cert)
+            .build();
     }
     
     @Transactional
@@ -198,7 +172,21 @@ public class SigningCertificateService {
         certificate.setUpdatedAt(Instant.now());
         certificateRepository.save(certificate);
         
-        return mapToDetailResponse(certificate);
+        // Load certificate details
+        X509Certificate x509Cert;
+        if ("PKCS11".equals(certificate.getStorageType())) {
+            // For PKCS#11, load from token
+            String pin = getPinFromHeader();
+            x509Cert = pkcs11Service.getCertificate(certificate.getCertificateAlias(), pin);
+        } else {
+            try {
+                x509Cert = loadCertificateFromKeystore(certificate);
+            } catch (Exception e) {
+                throw new CertificateException("Failed to load certificate: " + e.getMessage(), e);
+            }
+        }
+        
+        return mapToDetailResponse(certificate, x509Cert);
     }
     
     @Transactional
@@ -206,120 +194,178 @@ public class SigningCertificateService {
         String clientId = getCurrentClientId();
         SigningCertificate certificate = certificateRepository.findByIdAndClientId(certificateId, clientId)
             .orElseThrow(() -> new CertificateException("Certificate not found"));
-            
-        // Delete the keystore file
-        try {
-            Files.deleteIfExists(Paths.get(certificate.getKeystorePath()));
-        } catch (IOException e) {
-            throw new CertificateException("Failed to delete keystore file: " + e.getMessage(), e);
+        
+        // For PKCS#12, delete the keystore file
+        if ("PKCS12".equals(certificate.getStorageType()) && certificate.getKeystorePath() != null) {
+            try {
+                File keystoreFile = new File(certificate.getKeystorePath());
+                if (keystoreFile.exists()) {
+                    keystoreFile.delete();
+                }
+            } catch (Exception e) {
+                log.warn("Could not delete keystore file: {}", e.getMessage());
+            }
         }
-            
+        
+        // For PKCS#11, we only remove the association, not the certificate itself
         certificateRepository.delete(certificate);
     }
     
-    // Helper methods
-    private KeyPair generateKeyPair(String algorithm, int keySize) throws NoSuchAlgorithmException {
-        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance(algorithm);
-        keyPairGenerator.initialize(keySize);
-        return keyPairGenerator.generateKeyPair();
-    }
-    
-    private String generateKeystorePassword() {
-        byte[] randomBytes = new byte[24]; // 192 bits
-        new SecureRandom().nextBytes(randomBytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes);
-    }
-    
     /**
-     * Ensures that the keystore directory exists for the given client
-     * Creates it with proper permissions if it doesn't exist
+     * Maps entity to detail response
      */
-    private Path ensureKeystoreDirectory(String clientId) throws IOException {
-        // Create base and client-specific directories
-        Path baseDir = Paths.get(keystoreBasePath);
-        Path clientDir = baseDir.resolve(clientId);
-        
-        // Create directories if they don't exist
-        if (!Files.exists(baseDir)) {
-            if (directoryPermissions != null && !directoryPermissions.isEmpty()) {
-                // Create with specific permissions on Unix-like systems
-                Set<PosixFilePermission> permissions = PosixFilePermissions.fromString(directoryPermissions);
-                Files.createDirectories(baseDir, PosixFilePermissions.asFileAttribute(permissions));
-            } else {
-                Files.createDirectories(baseDir);
-            }
-        }
-        
-        if (!Files.exists(clientDir)) {
-            if (directoryPermissions != null && !directoryPermissions.isEmpty()) {
-                Set<PosixFilePermission> permissions = PosixFilePermissions.fromString(directoryPermissions);
-                Files.createDirectories(clientDir, PosixFilePermissions.asFileAttribute(permissions));
-            } else {
-                Files.createDirectories(clientDir);
-            }
-        }
-        
-        return clientDir;
-    }
-    
-    /**
-     * Creates a PKCS12 keystore file with the given private key and certificate
-     */
-    private void createPkcs12KeystoreFile(PrivateKey privateKey, X509Certificate certificate, 
-                                        String password, String alias, String filePath) throws Exception {
-        KeyStore keyStore = KeyStore.getInstance("PKCS12");
-        keyStore.load(null, null); // Initialize empty keystore
-        
-        // Create certificate chain
-        X509Certificate[] certChain = new X509Certificate[]{certificate};
-        
-        // Store private key and certificate in the keystore
-        keyStore.setKeyEntry(alias, privateKey, password.toCharArray(), certChain);
-        
-        // Save the keystore to a file
-        try (FileOutputStream fos = new FileOutputStream(filePath)) {
-            keyStore.store(fos, password.toCharArray());
-        }
-        
-        // Set restrictive file permissions on Unix-like systems
+    private CertificateDetailResponse mapToDetailResponse(SigningCertificate cert, X509Certificate x509Cert) {
         try {
-            File file = new File(filePath);
-            file.setReadable(false, false);
-            file.setReadable(true, true);
-            file.setWritable(false, false);
-            file.setWritable(true, true);
-            file.setExecutable(false, false);
+            boolean selfSigned = x509Cert.getSubjectX500Principal().equals(x509Cert.getIssuerX500Principal());
+            int keySize = getKeySize(x509Cert.getPublicKey());
+            
+            return CertificateDetailResponse.builder()
+                .id(cert.getId())
+                .subjectDN(x509Cert.getSubjectX500Principal().getName())
+                .issuerDN(x509Cert.getIssuerX500Principal().getName())
+                .serialNumber(x509Cert.getSerialNumber().toString())
+                .keyAlgorithm(x509Cert.getPublicKey().getAlgorithm())
+                .keySize(keySize)
+                .description(cert.getDescription())
+                .notBefore(x509Cert.getNotBefore().toInstant())
+                .notAfter(x509Cert.getNotAfter().toInstant())
+                .certificateBase64(Base64.getEncoder().encodeToString(x509Cert.getEncoded()))
+                .active(cert.isActive())
+                .selfSigned(selfSigned)
+                .storageType(cert.getStorageType())
+                .createdAt(cert.getCreatedAt())
+                .updatedAt(cert.getUpdatedAt())
+                .build();
         } catch (Exception e) {
-            // Log warning but continue - this is a best-effort attempt
-            // This might fail on non-Unix systems
-            System.err.println("Warning: Could not set file permissions: " + e.getMessage());
+            throw new CertificateException("Failed to map certificate details: " + e.getMessage(), e);
         }
     }
     
-    private X509Certificate generateSelfSignedCertificate(KeyPair keyPair, String subjectDN, 
-                                                        Instant notBefore, Instant notAfter) throws Exception {
-        X500Name subject = new X500Name(subjectDN);
-        BigInteger serialNumber = new BigInteger(64, new SecureRandom());
-        
-        X509v3CertificateBuilder certBuilder = new X509v3CertificateBuilder(
-            subject,
-            serialNumber,
-            Date.from(notBefore),
-            Date.from(notAfter),
-            subject,
-            SubjectPublicKeyInfo.getInstance(keyPair.getPublic().getEncoded())
-        );
-        
-        ContentSigner signer = new JcaContentSignerBuilder("SHA256WithRSA")
-            .build(keyPair.getPrivate());
+    /**
+     * Maps entity to summary
+     */
+    private CertificateSummary mapToSummary(SigningCertificate cert) {
+        try {
+            X509Certificate x509Cert;
             
-        X509CertificateHolder certHolder = certBuilder.build(signer);
-        return new JcaX509CertificateConverter().getCertificate(certHolder);
+            if ("PKCS11".equals(cert.getStorageType())) {
+                // For PKCS#11, load from token
+                try {
+                    String pin = getPinFromHeader();
+                    x509Cert = pkcs11Service.getCertificate(cert.getCertificateAlias(), pin);
+                } catch (Exception e) {
+                    // If we can't access the token, create a minimal summary
+                    return CertificateSummary.builder()
+                        .id(cert.getId())
+                        .description(cert.getDescription())
+                        .active(cert.isActive())
+                        .storageType(cert.getStorageType())
+                        .build();
+                }
+            } else {
+                // For PKCS#12, load from file
+                x509Cert = loadCertificateFromKeystore(cert);
+            }
+            
+            boolean selfSigned = x509Cert.getSubjectX500Principal().equals(x509Cert.getIssuerX500Principal());
+            
+            return CertificateSummary.builder()
+                .id(cert.getId())
+                .subjectDN(x509Cert.getSubjectX500Principal().getName())
+                .serialNumber(x509Cert.getSerialNumber().toString())
+                .description(cert.getDescription())
+                .notBefore(x509Cert.getNotBefore().toInstant())
+                .notAfter(x509Cert.getNotAfter().toInstant())
+                .active(cert.isActive())
+                .selfSigned(selfSigned)
+                .storageType(cert.getStorageType())
+                .build();
+        } catch (Exception e) {
+            // If we can't load certificate details, return minimal information
+            log.warn("Could not load certificate details for summary: {}", e.getMessage());
+            return CertificateSummary.builder()
+                .id(cert.getId())
+                .description(cert.getDescription())
+                .active(cert.isActive())
+                .storageType(cert.getStorageType())
+                .build();
+        }
+    }
+    
+    /**
+     * Loads an X509Certificate from a PKCS12 keystore
+     */
+    public X509Certificate loadCertificateFromKeystore(SigningCertificate cert) throws Exception {
+        if (!"PKCS12".equals(cert.getStorageType())) {
+            throw new CertificateException("Certificate is not stored in PKCS12 format");
+        }
+        
+        KeyStore keyStore = KeyStore.getInstance("PKCS12");
+        try (FileInputStream fis = new FileInputStream(cert.getKeystorePath())) {
+            keyStore.load(fis, cert.getKeystorePassword().toCharArray());
+            return (X509Certificate) keyStore.getCertificate(cert.getCertificateAlias());
+        }
+    }
+    
+    /**
+     * Gets the private key for a certificate
+     * 
+     * @param certificateId The certificate ID
+     * @return The private key
+     */
+    public PrivateKey getPrivateKey(String certificateId) {
+        try {
+            SigningCertificate cert = certificateRepository.findById(certificateId)
+                .orElseThrow(() -> new CertificateException("Certificate not found"));
+            
+            if ("PKCS11".equals(cert.getStorageType())) {
+                // For PKCS#11, get from token
+                String pin = getPinFromHeader();
+                return pkcs11Service.getPrivateKey(cert.getCertificateAlias(), pin);
+            } else {
+                // For PKCS#12, get from file
+                KeyStore keyStore = KeyStore.getInstance("PKCS12");
+                try (FileInputStream fis = new FileInputStream(cert.getKeystorePath())) {
+                    keyStore.load(fis, cert.getKeystorePassword().toCharArray());
+                    PrivateKey privateKey = (PrivateKey) keyStore.getKey(
+                        cert.getCertificateAlias(), 
+                        cert.getKeystorePassword().toCharArray());
+                    
+                    if (privateKey == null) {
+                        throw new CertificateException("Private key not found in keystore");
+                    }
+                    
+                    return privateKey;
+                }
+            }
+        } catch (CertificateException ce) {
+            throw ce;
+        } catch (Exception e) {
+            throw new CertificateException("Failed to get private key: " + e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * Gets the PIN from the request header
+     */
+    private String getPinFromHeader() {
+        ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (attributes != null) {
+            HttpServletRequest request = attributes.getRequest();
+            String pin = request.getHeader(PIN_HEADER);
+            
+            if (pin == null || pin.isEmpty()) {
+                throw new CertificateException("HSM PIN is required in the " + PIN_HEADER + " header");
+            }
+            
+            return pin;
+        }
+        
+        throw new CertificateException("Could not access request context to get HSM PIN");
     }
     
     /**
      * Retrieves the current client ID from the security context
-     * In a production environment, this would extract the client ID from the OAuth token
      */
     private String getCurrentClientId() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
@@ -334,122 +380,19 @@ public class SigningCertificateService {
             return authentication.getName();
         }
         
-        // Fallback (should be replaced with proper exception in production)
         throw new CertificateException("Unable to determine client ID from security context");
-    }
-    
-    private CertificateDetailResponse mapToDetailResponse(SigningCertificate cert) {
-        try {
-            // Load certificate details from the keystore file
-            X509Certificate certificate = loadCertificateFromKeystore(cert);
-            
-            return CertificateDetailResponse.builder()
-                .id(cert.getId())
-                .subjectDN(certificate.getSubjectX500Principal().getName())
-                .issuerDN(certificate.getIssuerX500Principal().getName())
-                .serialNumber(certificate.getSerialNumber().toString())
-                .keyAlgorithm(certificate.getPublicKey().getAlgorithm())
-                .keySize(getKeySize(certificate.getPublicKey()))
-                .description(cert.getDescription())
-                .notBefore(certificate.getNotBefore().toInstant())
-                .notAfter(certificate.getNotAfter().toInstant())
-                .certificateBase64(Base64.getEncoder().encodeToString(certificate.getEncoded()))
-                .active(cert.isActive())
-                .selfSigned(isSelfSigned(certificate))
-                .createdAt(cert.getCreatedAt())
-                .updatedAt(cert.getUpdatedAt())
-                .build();
-        } catch (Exception e) {
-            throw new CertificateException("Failed to load certificate details: " + e.getMessage(), e);
-        }
-    }
-    
-    private CertificateSummary mapToSummary(SigningCertificate cert) {
-        try {
-            // Load certificate details from the keystore file
-            X509Certificate certificate = loadCertificateFromKeystore(cert);
-            
-            return CertificateSummary.builder()
-                .id(cert.getId())
-                .subjectDN(certificate.getSubjectX500Principal().getName())
-                .serialNumber(certificate.getSerialNumber().toString())
-                .description(cert.getDescription())
-                .notBefore(certificate.getNotBefore().toInstant())
-                .notAfter(certificate.getNotAfter().toInstant())
-                .active(cert.isActive())
-                .selfSigned(isSelfSigned(certificate))
-                .build();
-        } catch (Exception e) {
-            throw new CertificateException("Failed to load certificate summary: " + e.getMessage(), e);
-        }
-    }
-    
-    /**
-     * Loads an X509Certificate from a PKCS12 keystore
-     */
-    public X509Certificate loadCertificateFromKeystore(SigningCertificate cert) throws Exception {
-        KeyStore keyStore = KeyStore.getInstance("PKCS12");
-        try (FileInputStream fis = new FileInputStream(cert.getKeystorePath())) {
-            keyStore.load(fis, cert.getKeystorePassword().toCharArray());
-            return (X509Certificate) keyStore.getCertificate(cert.getKeystoreAlias());
-        }
-    }
-    
-    /**
-     * Determines if a certificate is self-signed by comparing subject and issuer DNs
-     */
-    private boolean isSelfSigned(X509Certificate cert) {
-        return cert.getSubjectX500Principal().equals(cert.getIssuerX500Principal());
     }
     
     /**
      * Estimates the key size based on the public key
      */
-    private Integer getKeySize(PublicKey publicKey) {
-        if (publicKey instanceof RSAPublicKey) {
-            return ((RSAPublicKey) publicKey).getModulus().bitLength();
-        } else if (publicKey instanceof ECPublicKey) {
+    private int getKeySize(java.security.PublicKey publicKey) {
+        if (publicKey instanceof java.security.interfaces.RSAPublicKey) {
+            return ((java.security.interfaces.RSAPublicKey) publicKey).getModulus().bitLength();
+        } else if (publicKey instanceof java.security.interfaces.ECPublicKey) {
             // For EC keys, we estimate based on field size
-            return ((ECPublicKey) publicKey).getParams().getOrder().bitLength();
+            return ((java.security.interfaces.ECPublicKey) publicKey).getParams().getOrder().bitLength();
         }
-        return null; // Unknown key type
-    }
-    
-    /**
-     * Retrieves the private key from the stored PKCS12 keystore file
-     * This would be used by the signing service when needed
-     */
-    public PrivateKey getPrivateKey(String certificateId) {
-        try {
-            SigningCertificate cert = certificateRepository.findById(certificateId)
-                .orElseThrow(() -> new CertificateException("Certificate not found"));
-                
-            // Path to the keystore file
-            String keystorePath = cert.getKeystorePath();
-            File keystoreFile = new File(keystorePath);
-            
-            if (!keystoreFile.exists()) {
-                throw new CertificateException("Keystore file not found: " + keystorePath);
-            }
-            
-            // Load the keystore from file
-            KeyStore keyStore = KeyStore.getInstance("PKCS12");
-            try (FileInputStream fis = new FileInputStream(keystoreFile)) {
-                keyStore.load(fis, cert.getKeystorePassword().toCharArray());
-            }
-                         
-            // Get the private key using the stored alias
-            PrivateKey privateKey = (PrivateKey) keyStore.getKey(
-                cert.getKeystoreAlias(), 
-                cert.getKeystorePassword().toCharArray());
-                
-            if (privateKey == null) {
-                throw new CertificateException("Private key not found in keystore");
-            }
-            
-            return privateKey;
-        } catch (Exception e) {
-            throw new CertificateException("Failed to retrieve private key: " + e.getMessage(), e);
-        }
+        return 0; // Unknown key type
     }
 }

@@ -11,7 +11,6 @@ import org.springframework.transaction.annotation.Transactional;
 import com.wpanther.eidasremotesigning.dto.DigestSigningRequest;
 import com.wpanther.eidasremotesigning.dto.DigestSigningResponse;
 import com.wpanther.eidasremotesigning.entity.SigningCertificate;
-import com.wpanther.eidasremotesigning.exception.CertificateException;
 import com.wpanther.eidasremotesigning.exception.SigningException;
 import com.wpanther.eidasremotesigning.repository.SigningCertificateRepository;
 
@@ -55,8 +54,8 @@ public class RemoteSigningService {
                 throw new SigningException("Certificate is not active");
             }
             
-            // Load X509Certificate from keystore
-            X509Certificate certificate = loadCertificate(certEntity);
+            // Load X509Certificate 
+            X509Certificate certificate = certificateService.getCertificateWithX509(certificateId).getX509Certificate();
             
             // Verify eIDAS compliance
             eidasComplianceService.validateEIDASCompliance(request, certificate);
@@ -70,8 +69,16 @@ public class RemoteSigningService {
             // Decode the digest value
             byte[] digestBytes = Base64.getDecoder().decode(request.getDigestValue());
             
-            // Create signature instance
-            Signature signature = Signature.getInstance(signatureAlgorithm);
+            // Create signature instance with the appropriate provider
+            Signature signature;
+            if ("PKCS11".equals(certEntity.getStorageType())) {
+                // For PKCS#11, use the HSM provider
+                signature = Signature.getInstance(signatureAlgorithm, certEntity.getProviderName());
+            } else {
+                // For PKCS#12, use the default provider
+                signature = Signature.getInstance(signatureAlgorithm);
+            }
+            
             signature.initSign(privateKey);
             
             // For digest signing, we directly sign the digest value
@@ -166,17 +173,6 @@ public class RemoteSigningService {
             }
         } else {
             throw new SigningException("Unsupported key algorithm: " + keyAlgorithm);
-        }
-    }
-    
-    /**
-     * Loads the X509Certificate from the keystore file
-     */
-    private X509Certificate loadCertificate(SigningCertificate cert) {
-        try {
-            return certificateService.loadCertificateFromKeystore(cert);
-        } catch (Exception e) {
-            throw new CertificateException("Failed to load certificate: " + e.getMessage(), e);
         }
     }
 }

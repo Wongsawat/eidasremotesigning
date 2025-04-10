@@ -7,24 +7,19 @@ import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 
+/**
+ * DTO for certificate information from PKCS#11 token
+ */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class CertificateDetailResponse {
-    private String id;
+public class Pkcs11CertificateInfo {
+    private String alias;
     private String subjectDN;
     private String issuerDN;
     private String serialNumber;
-    private String keyAlgorithm;
-    private Integer keySize;
-    private String description;
     private Instant notBefore;
     private Instant notAfter;
-    private String certificateBase64;
-    private boolean active;
-    private boolean selfSigned;
-    private String storageType; // PKCS11 or PKCS12
-    private Instant createdAt;
-    private Instant updatedAt;
+    private boolean hasPrivateKey;
 }
