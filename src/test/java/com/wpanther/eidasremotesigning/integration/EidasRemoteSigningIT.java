@@ -140,51 +140,6 @@ public class EidasRemoteSigningIT {
                 System.out.println("Generated OAuth token successfully");
         }
 
-        /**
-         * Test certificate creation
-         */
-        @Test
-        @Order(3)
-        public void testCertificateCreation() throws Exception {
-                // Create certificate request
-                CertificateCreateRequest request = CertificateCreateRequest.builder()
-                                .subjectDN("CN=Integration Test, O=Test Organization, C=US")
-                                .keyAlgorithm("RSA")
-                                .keySize(2048)
-                                .validityMonths(12)
-                                .description("Integration test certificate")
-                                .selfSigned(true)
-                                .build();
-
-                // Call the certificate creation endpoint
-                MvcResult result = mockMvc.perform(MockMvcRequestBuilders
-                                .post("/certificates")
-                                .contentType(MediaType.APPLICATION_JSON)
-                                .header("Authorization", "Bearer " + accessToken)
-                                .content(objectMapper.writeValueAsString(request)))
-                                .andExpect(status().isCreated())
-                                .andReturn();
-
-                // Parse response
-                String responseContent = result.getResponse().getContentAsString();
-                JsonNode responseJson = objectMapper.readTree(responseContent);
-
-                // Save certificate ID for subsequent tests
-                certificateId = responseJson.get("id").asText();
-
-                // Verify certificate data
-                assertNotNull(certificateId);
-                assertEquals("C=US,O=Test Organization,CN=Integration Test", responseJson.get("subjectDN").asText());
-                assertEquals("RSA", responseJson.get("keyAlgorithm").asText());
-                assertEquals(2048, responseJson.get("keySize").asInt());
-                assertTrue(responseJson.get("active").asBoolean());
-                assertTrue(responseJson.get("selfSigned").asBoolean());
-
-                // Verify certificate exists in database
-                assertTrue(certificateRepository.findById(certificateId).isPresent());
-
-                System.out.println("Created certificate with ID: " + certificateId);
-        }
 
         /**
          * Test certificate listing

@@ -13,7 +13,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.wpanther.eidasremotesigning.dto.CertificateCreateRequest;
 import com.wpanther.eidasremotesigning.dto.CertificateDetailResponse;
 import com.wpanther.eidasremotesigning.dto.CertificateListResponse;
 import com.wpanther.eidasremotesigning.dto.CertificateUpdateRequest;
@@ -58,16 +57,6 @@ public class SigningCertificateController {
         return new ResponseEntity<>(response, HttpStatus.CREATED);
     }
 
-    /**
-     * Legacy endpoint for creating PKCS#12 certificates
-     * Kept for backward compatibility
-     */
-    @PostMapping
-    public ResponseEntity<CertificateDetailResponse> createCertificate(
-            @Valid @RequestBody CertificateCreateRequest request) {
-        log.warn("Legacy PKCS#12 certificate creation requested - use PKCS#11 endpoints for new certificates");
-        throw new UnsupportedOperationException("Legacy certificate creation is disabled - use PKCS#11 certificates");
-    }
 
     @GetMapping
     public ResponseEntity<CertificateListResponse> listCertificates() {
