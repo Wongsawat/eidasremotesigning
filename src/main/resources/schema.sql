@@ -23,13 +23,16 @@ CREATE TABLE IF NOT EXISTS oauth2_client_grant_types (
     FOREIGN KEY (client_id) REFERENCES oauth2_clients(id)
 );
 
--- Signing certificates table
+-- Updated signing certificates table with PKCS#11 support
 CREATE TABLE IF NOT EXISTS signing_certificates (
     id VARCHAR(255) PRIMARY KEY,
     description VARCHAR(255),
-    keystore_path VARCHAR(500) NOT NULL,
-    keystore_password VARCHAR(255) NOT NULL,
-    keystore_alias VARCHAR(255) NOT NULL,
+    storage_type VARCHAR(10) NOT NULL, -- PKCS11 or PKCS12
+    certificate_alias VARCHAR(255) NOT NULL,
+    keystore_path VARCHAR(500),
+    keystore_password VARCHAR(255),
+    provider_name VARCHAR(255),
+    slot_id INTEGER,
     active BOOLEAN NOT NULL DEFAULT TRUE,
     client_id VARCHAR(255) NOT NULL,
     created_at TIMESTAMP NOT NULL,
