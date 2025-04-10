@@ -31,6 +31,7 @@ import com.wpanther.eidasremotesigning.entity.SigningCertificate;
 import com.wpanther.eidasremotesigning.exception.CertificateException;
 import com.wpanther.eidasremotesigning.repository.OAuth2ClientRepository;
 import com.wpanther.eidasremotesigning.repository.SigningCertificateRepository;
+import com.wpanther.eidasremotesigning.service.CSCApiService.PinThreadLocal;
 
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
@@ -48,13 +49,13 @@ public class SigningCertificateService {
     @Value("${app.keystore.base-path:/app/keystores}")
     private String keystoreBasePath;
     
-    private static final String PIN_HEADER = "X-HSM-PIN";
+    private static final String PIN_HEADER = "X-HSM-PIN"; // For backward compatibility
     
     /**
      * Lists all certificates from PKCS#11 token
      */
     public List<Pkcs11CertificateInfo> listPkcs11Certificates() {
-        String pin = getPinFromHeader();
+        String pin = getPinFromAvailableSources();
         return pkcs11Service.listCertificates(pin);
     }
     
@@ -73,7 +74,7 @@ public class SigningCertificateService {
             }
             
             // Verify certificate exists in the HSM
-            String pin = getPinFromHeader();
+            String pin = getPinFromAvailableSources();
             X509Certificate certificate = pkcs11Service.getCertificate(request.getCertificateAlias(), pin);
             
             // Verify private key is available
@@ -137,7 +138,7 @@ public class SigningCertificateService {
         X509Certificate x509Cert;
         if ("PKCS11".equals(certificate.getStorageType())) {
             // For PKCS#11, load from token
-            String pin = getPinFromHeader();
+            String pin = getPinFromAvailableSources();
             x509Cert = pkcs11Service.getCertificate(certificate.getCertificateAlias(), pin);
         } else {
             // For PKCS#12, load from file
@@ -176,7 +177,7 @@ public class SigningCertificateService {
         X509Certificate x509Cert;
         if ("PKCS11".equals(certificate.getStorageType())) {
             // For PKCS#11, load from token
-            String pin = getPinFromHeader();
+            String pin = getPinFromAvailableSources();
             x509Cert = pkcs11Service.getCertificate(certificate.getCertificateAlias(), pin);
         } else {
             try {
@@ -251,7 +252,7 @@ public class SigningCertificateService {
             if ("PKCS11".equals(cert.getStorageType())) {
                 // For PKCS#11, load from token
                 try {
-                    String pin = getPinFromHeader();
+                    String pin = getPinFromAvailableSources();
                     x509Cert = pkcs11Service.getCertificate(cert.getCertificateAlias(), pin);
                 } catch (Exception e) {
                     // If we can't access the token, create a minimal summary
@@ -320,7 +321,7 @@ public class SigningCertificateService {
             
             if ("PKCS11".equals(cert.getStorageType())) {
                 // For PKCS#11, get from token
-                String pin = getPinFromHeader();
+                String pin = getPinFromAvailableSources();
                 return pkcs11Service.getPrivateKey(cert.getCertificateAlias(), pin);
             } else {
                 // For PKCS#12, get from file
@@ -346,22 +347,28 @@ public class SigningCertificateService {
     }
     
     /**
-     * Gets the PIN from the request header
+     * Gets the PIN from various sources (CSC thread local, request header, etc.)
+     * This method supports both the new CSC API approach and legacy header approach
      */
-    private String getPinFromHeader() {
-        ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        if (attributes != null) {
-            HttpServletRequest request = attributes.getRequest();
-            String pin = request.getHeader(PIN_HEADER);
-            
-            if (pin == null || pin.isEmpty()) {
-                throw new CertificateException("HSM PIN is required in the " + PIN_HEADER + " header");
-            }
-            
+    private String getPinFromAvailableSources() {
+        // First check thread local (for CSC API)
+        String pin = PinThreadLocal.get();
+        if (pin != null) {
             return pin;
         }
         
-        throw new CertificateException("Could not access request context to get HSM PIN");
+        // Then check header (legacy approach)
+        ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (attributes != null) {
+            HttpServletRequest request = attributes.getRequest();
+            pin = request.getHeader(PIN_HEADER);
+            
+            if (pin != null && !pin.isEmpty()) {
+                return pin;
+            }
+        }
+        
+        throw new CertificateException("HSM PIN is required. Please provide it via the credentials object or X-HSM-PIN header.");
     }
     
     /**
