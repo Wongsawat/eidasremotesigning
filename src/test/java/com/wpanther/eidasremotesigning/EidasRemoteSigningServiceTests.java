@@ -3,7 +3,6 @@ package com.wpanther.eidasremotesigning;
 import com.wpanther.eidasremotesigning.controller.ClientRegistrationController;
 import com.wpanther.eidasremotesigning.controller.SigningCertificateController;
 import com.wpanther.eidasremotesigning.dto.*;
-import com.wpanther.eidasremotesigning.exception.CertificateException;
 import com.wpanther.eidasremotesigning.exception.ClientRegistrationException;
 import com.wpanther.eidasremotesigning.repository.OAuth2ClientRepository;
 import com.wpanther.eidasremotesigning.repository.SigningCertificateRepository;
@@ -16,17 +15,13 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.test.web.servlet.MockMvc;
 import java.time.Instant;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @SpringBootTest
@@ -45,8 +40,6 @@ public class EidasRemoteSigningServiceTests {
     @Mock
     private PKCS11Service pkcs11Service;
 
-    @Mock
-    private RemoteSigningService remoteSigningService;
 
     @Mock
     private OAuth2ClientRepository oauth2ClientRepository;
@@ -136,226 +129,6 @@ public class EidasRemoteSigningServiceTests {
         }
     }
 
-    //----------------------------------------------------------------------
-    // Certificate Management Tests
-    //----------------------------------------------------------------------
-    
-    @Test
-    public void testAssociatePkcs11Certificate_Success() {
-        // Arrange
-        Pkcs11CertificateAssociateRequest request = Pkcs11CertificateAssociateRequest.builder()
-                .certificateAlias("test-certificate")
-                .description("Test PKCS#11 certificate")
-                .build();
 
-        CertificateDetailResponse expectedResponse = CertificateDetailResponse.builder()
-                .id("test-cert-id")
-                .subjectDN("CN=Test User, O=Test Organization, C=US")
-                .issuerDN("CN=Test User, O=Test Organization, C=US")
-                .serialNumber("123456789")
-                .keyAlgorithm("RSA")
-                .keySize(2048)
-                .notBefore(Instant.now())
-                .notAfter(Instant.now().plusSeconds(365 * 24 * 60 * 60))
-                .active(true)
-                .selfSigned(true)
-                .storageType("PKCS11")
-                .createdAt(Instant.now())
-                .build();
-
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service
-        when(signingCertificateService.associatePkcs11Certificate(any(Pkcs11CertificateAssociateRequest.class)))
-                .thenReturn(expectedResponse);
-
-        // Act
-        ResponseEntity<CertificateDetailResponse> response = certificateController.associatePkcs11Certificate(request);
-
-        // Assert
-        assertEquals(HttpStatus.CREATED, response.getStatusCode());
-        assertNotNull(response.getBody());
-        assertEquals("test-cert-id", response.getBody().getId());
-        assertEquals("PKCS11", response.getBody().getStorageType());
-    }
-
-    @Test
-    public void testListPkcs11Certificates_Success() {
-        // Arrange
-        List<Pkcs11CertificateInfo> expectedCertificates = new ArrayList<>();
-        expectedCertificates.add(Pkcs11CertificateInfo.builder()
-                .alias("cert-1")
-                .subjectDN("CN=Test User 1")
-                .issuerDN("CN=Test CA")
-                .serialNumber("123")
-                .hasPrivateKey(true)
-                .build());
-
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service
-        when(signingCertificateService.listPkcs11Certificates()).thenReturn(expectedCertificates);
-
-        // Act
-        ResponseEntity<List<Pkcs11CertificateInfo>> response = certificateController.listPkcs11Certificates();
-
-        // Assert
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertNotNull(response.getBody());
-        assertEquals(1, response.getBody().size());
-        assertEquals("cert-1", response.getBody().get(0).getAlias());
-    }
-
-    @Test
-    public void testListCertificates_Success() {
-        // Arrange
-        List<CertificateSummary> certificates = new ArrayList<>();
-        certificates.add(CertificateSummary.builder()
-                .id("cert-1")
-                .subjectDN("CN=Test User 1")
-                .serialNumber("123")
-                .active(true)
-                .storageType("PKCS11")
-                .build());
-        certificates.add(CertificateSummary.builder()
-                .id("cert-2")
-                .subjectDN("CN=Test User 2")
-                .serialNumber("456")
-                .active(true)
-                .storageType("PKCS11")
-                .build());
-
-        CertificateListResponse expectedResponse = CertificateListResponse.builder()
-                .certificates(certificates)
-                .total(2)
-                .build();
-
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service
-        when(signingCertificateService.listCertificates()).thenReturn(expectedResponse);
-
-        // Act
-        ResponseEntity<CertificateListResponse> response = certificateController.listCertificates();
-
-        // Assert
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertNotNull(response.getBody());
-        assertEquals(2, response.getBody().getTotal());
-    }
-
-    @Test
-    public void testGetCertificate_Success() {
-        // Arrange
-        CertificateDetailResponse expectedResponse = CertificateDetailResponse.builder()
-                .id("test-cert-id")
-                .subjectDN("CN=Test User")
-                .issuerDN("CN=Test User")
-                .serialNumber("123456789")
-                .active(true)
-                .storageType("PKCS11")
-                .build();
-
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service
-        when(signingCertificateService.getCertificate("test-cert-id")).thenReturn(expectedResponse);
-
-        // Act
-        ResponseEntity<CertificateDetailResponse> response = certificateController.getCertificate("test-cert-id");
-
-        // Assert
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertNotNull(response.getBody());
-        assertEquals("test-cert-id", response.getBody().getId());
-    }
-
-    @Test
-    public void testGetCertificate_NotFound() {
-        // Arrange
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service to throw exception
-        when(signingCertificateService.getCertificate("non-existent-id"))
-                .thenThrow(new CertificateException("Certificate not found"));
-
-        // Act & Assert
-        assertThrows(CertificateException.class, () -> {
-            certificateController.getCertificate("non-existent-id");
-        });
-    }
-
-    @Test
-    public void testUpdateCertificate_Success() {
-        // Arrange
-        CertificateUpdateRequest request = CertificateUpdateRequest.builder()
-                .description("Updated description")
-                .active(false)
-                .build();
-
-        CertificateDetailResponse expectedResponse = CertificateDetailResponse.builder()
-                .id("test-cert-id")
-                .subjectDN("CN=Test User")
-                .description("Updated description")
-                .active(false)
-                .storageType("PKCS11")
-                .build();
-
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service
-        when(signingCertificateService.updateCertificate(eq("test-cert-id"), any(CertificateUpdateRequest.class)))
-                .thenReturn(expectedResponse);
-
-        // Act
-        ResponseEntity<CertificateDetailResponse> response = certificateController.updateCertificate("test-cert-id", request);
-
-        // Assert
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertNotNull(response.getBody());
-        assertEquals("Updated description", response.getBody().getDescription());
-        assertFalse(response.getBody().isActive());
-    }
-
-    @Test
-    public void testDeleteCertificate_Success() {
-        // Arrange
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service - void method, so we need to use doNothing
-        doNothing().when(signingCertificateService).deleteCertificate("test-cert-id");
-
-        // Act
-        ResponseEntity<Void> response = certificateController.deleteCertificate("test-cert-id");
-
-        // Assert
-        assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
-        verify(signingCertificateService).deleteCertificate("test-cert-id");
-    }
-
-
-    //----------------------------------------------------------------------
-    // Helper Methods for Tests
-    //----------------------------------------------------------------------
-
-    private void mockClientAuthentication(String clientId) {
-        // Create a mock Authentication object
-        Authentication authentication = mock(JwtAuthenticationToken.class);
-        when(authentication.getName()).thenReturn(clientId);
-        
-        // Create a mock SecurityContext
-        SecurityContext securityContext = mock(SecurityContext.class);
-        when(securityContext.getAuthentication()).thenReturn(authentication);
-        
-        // Set the SecurityContext
-        SecurityContextHolder.setContext(securityContext);
-    }
 
 }

@@ -17,8 +17,6 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
 
 import com.wpanther.eidasremotesigning.dto.CertificateDetailResponse;
 import com.wpanther.eidasremotesigning.dto.CertificateListResponse;
@@ -31,9 +29,7 @@ import com.wpanther.eidasremotesigning.entity.SigningCertificate;
 import com.wpanther.eidasremotesigning.exception.CertificateException;
 import com.wpanther.eidasremotesigning.repository.OAuth2ClientRepository;
 import com.wpanther.eidasremotesigning.repository.SigningCertificateRepository;
-import com.wpanther.eidasremotesigning.service.CSCApiService.PinThreadLocal;
 
-import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -49,22 +45,31 @@ public class SigningCertificateService {
     @Value("${app.keystore.base-path:/app/keystores}")
     private String keystoreBasePath;
     
-    private static final String PIN_HEADER = "X-HSM-PIN"; // For backward compatibility
-    
     /**
      * Lists all certificates from PKCS#11 token
+     * 
+     * @param pin The PIN to access the PKCS#11 token
      */
-    public List<Pkcs11CertificateInfo> listPkcs11Certificates() {
-        String pin = getPinFromAvailableSources();
+    public List<Pkcs11CertificateInfo> listPkcs11Certificates(String pin) {
+        if (pin == null || pin.isEmpty()) {
+            throw new CertificateException("PIN is required to access PKCS#11 token");
+        }
         return pkcs11Service.listCertificates(pin);
     }
     
     /**
      * Associates an existing PKCS#11 certificate with a client
+     * 
+     * @param request The certificate association request
+     * @param pin The PIN to access the PKCS#11 token
      */
     @Transactional
-    public CertificateDetailResponse associatePkcs11Certificate(Pkcs11CertificateAssociateRequest request) {
+    public CertificateDetailResponse associatePkcs11Certificate(Pkcs11CertificateAssociateRequest request, String pin) {
         try {
+            if (pin == null || pin.isEmpty()) {
+                throw new CertificateException("PIN is required to access PKCS#11 token");
+            }
+            
             // Get client ID from authentication or context
             String clientId = getCurrentClientId();
             
@@ -74,7 +79,6 @@ public class SigningCertificateService {
             }
             
             // Verify certificate exists in the HSM
-            String pin = getPinFromAvailableSources();
             X509Certificate certificate = pkcs11Service.getCertificate(request.getCertificateAlias(), pin);
             
             // Verify private key is available
@@ -109,7 +113,7 @@ public class SigningCertificateService {
         List<SigningCertificate> certificates = certificateRepository.findByClientId(clientId);
         
         List<CertificateSummary> summaries = certificates.stream()
-            .map(this::mapToSummary)
+            .map(cert -> mapToSummary(cert, null)) // No PIN provided for summary list
             .collect(Collectors.toList());
             
         return CertificateListResponse.builder()
@@ -119,17 +123,20 @@ public class SigningCertificateService {
     }
     
     @Transactional(readOnly = true)
-    public CertificateDetailResponse getCertificate(String certificateId) {
-        CertificateResponse response = getCertificateWithX509(certificateId);
+    public CertificateDetailResponse getCertificate(String certificateId, String pin) {
+        CertificateResponse response = getCertificateWithX509(certificateId, pin);
         return response.getDetailResponse();
     }
     
     /**
      * Gets a certificate with its X509Certificate object
      * Internal method used by other services
+     * 
+     * @param certificateId The certificate ID
+     * @param pin The PIN for PKCS#11 tokens
      */
     @Transactional(readOnly = true)
-    public CertificateResponse getCertificateWithX509(String certificateId) {
+    public CertificateResponse getCertificateWithX509(String certificateId, String pin) {
         String clientId = getCurrentClientId();
         SigningCertificate certificate = certificateRepository.findByIdAndClientId(certificateId, clientId)
             .orElseThrow(() -> new CertificateException("Certificate not found"));
@@ -138,7 +145,9 @@ public class SigningCertificateService {
         X509Certificate x509Cert;
         if ("PKCS11".equals(certificate.getStorageType())) {
             // For PKCS#11, load from token
-            String pin = getPinFromAvailableSources();
+            if (pin == null || pin.isEmpty()) {
+                throw new CertificateException("PIN is required to access PKCS#11 token");
+            }
             x509Cert = pkcs11Service.getCertificate(certificate.getCertificateAlias(), pin);
         } else {
             // For PKCS#12, load from file
@@ -157,7 +166,7 @@ public class SigningCertificateService {
     }
     
     @Transactional
-    public CertificateDetailResponse updateCertificate(String certificateId, CertificateUpdateRequest request) {
+    public CertificateDetailResponse updateCertificate(String certificateId, CertificateUpdateRequest request, String pin) {
         String clientId = getCurrentClientId();
         SigningCertificate certificate = certificateRepository.findByIdAndClientId(certificateId, clientId)
             .orElseThrow(() -> new CertificateException("Certificate not found"));
@@ -177,7 +186,9 @@ public class SigningCertificateService {
         X509Certificate x509Cert;
         if ("PKCS11".equals(certificate.getStorageType())) {
             // For PKCS#11, load from token
-            String pin = getPinFromAvailableSources();
+            if (pin == null || pin.isEmpty()) {
+                throw new CertificateException("PIN is required to access PKCS#11 token");
+            }
             x509Cert = pkcs11Service.getCertificate(certificate.getCertificateAlias(), pin);
         } else {
             try {
@@ -245,23 +256,22 @@ public class SigningCertificateService {
     /**
      * Maps entity to summary
      */
-    private CertificateSummary mapToSummary(SigningCertificate cert) {
+    private CertificateSummary mapToSummary(SigningCertificate cert, String pin) {
         try {
             X509Certificate x509Cert;
             
             if ("PKCS11".equals(cert.getStorageType())) {
-                // For PKCS#11, load from token
-                try {
-                    String pin = getPinFromAvailableSources();
-                    x509Cert = pkcs11Service.getCertificate(cert.getCertificateAlias(), pin);
-                } catch (Exception e) {
-                    // If we can't access the token, create a minimal summary
-                    return CertificateSummary.builder()
-                        .id(cert.getId())
-                        .description(cert.getDescription())
-                        .active(cert.isActive())
-                        .storageType(cert.getStorageType())
-                        .build();
+                // For PKCS#11, load from token if PIN is provided
+                if (pin != null && !pin.isEmpty()) {
+                    try {
+                        x509Cert = pkcs11Service.getCertificate(cert.getCertificateAlias(), pin);
+                    } catch (Exception e) {
+                        // If we can't access the token, create a minimal summary
+                        return createMinimalSummary(cert);
+                    }
+                } else {
+                    // No PIN provided, create minimal summary
+                    return createMinimalSummary(cert);
                 }
             } else {
                 // For PKCS#12, load from file
@@ -284,13 +294,17 @@ public class SigningCertificateService {
         } catch (Exception e) {
             // If we can't load certificate details, return minimal information
             log.warn("Could not load certificate details for summary: {}", e.getMessage());
-            return CertificateSummary.builder()
-                .id(cert.getId())
-                .description(cert.getDescription())
-                .active(cert.isActive())
-                .storageType(cert.getStorageType())
-                .build();
+            return createMinimalSummary(cert);
         }
+    }
+    
+    private CertificateSummary createMinimalSummary(SigningCertificate cert) {
+        return CertificateSummary.builder()
+            .id(cert.getId())
+            .description(cert.getDescription())
+            .active(cert.isActive())
+            .storageType(cert.getStorageType())
+            .build();
     }
     
     /**
@@ -312,16 +326,19 @@ public class SigningCertificateService {
      * Gets the private key for a certificate
      * 
      * @param certificateId The certificate ID
+     * @param pin The PIN for PKCS#11 token
      * @return The private key
      */
-    public PrivateKey getPrivateKey(String certificateId) {
+    public PrivateKey getPrivateKey(String certificateId, String pin) {
         try {
             SigningCertificate cert = certificateRepository.findById(certificateId)
                 .orElseThrow(() -> new CertificateException("Certificate not found"));
             
             if ("PKCS11".equals(cert.getStorageType())) {
                 // For PKCS#11, get from token
-                String pin = getPinFromAvailableSources();
+                if (pin == null || pin.isEmpty()) {
+                    throw new CertificateException("PIN is required to access PKCS#11 token");
+                }
                 return pkcs11Service.getPrivateKey(cert.getCertificateAlias(), pin);
             } else {
                 // For PKCS#12, get from file
@@ -344,31 +361,6 @@ public class SigningCertificateService {
         } catch (Exception e) {
             throw new CertificateException("Failed to get private key: " + e.getMessage(), e);
         }
-    }
-    
-    /**
-     * Gets the PIN from various sources (CSC thread local, request header, etc.)
-     * This method supports both the new CSC API approach and legacy header approach
-     */
-    private String getPinFromAvailableSources() {
-        // First check thread local (for CSC API)
-        String pin = PinThreadLocal.get();
-        if (pin != null) {
-            return pin;
-        }
-        
-        // Then check header (legacy approach)
-        ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-        if (attributes != null) {
-            HttpServletRequest request = attributes.getRequest();
-            pin = request.getHeader(PIN_HEADER);
-            
-            if (pin != null && !pin.isEmpty()) {
-                return pin;
-            }
-        }
-        
-        throw new CertificateException("HSM PIN is required. Please provide it via the credentials object or X-HSM-PIN header.");
     }
     
     /**

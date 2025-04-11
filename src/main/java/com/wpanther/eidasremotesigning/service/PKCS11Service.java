@@ -9,14 +9,10 @@ import java.util.Enumeration;
 import java.util.List;
 
 import org.springframework.stereotype.Service;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
 
 import com.wpanther.eidasremotesigning.dto.Pkcs11CertificateInfo;
 import com.wpanther.eidasremotesigning.exception.CertificateException;
-import com.wpanther.eidasremotesigning.service.CSCApiService.PinThreadLocal;
 
-import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -30,8 +26,6 @@ public class PKCS11Service {
 
     private final KeyStore pkcs11KeyStore;
     private final Provider pkcs11Provider;
-
-    private static final String PIN_HEADER = "X-HSM-PIN"; // For backward compatibility
 
     /**
      * Lists all certificates available in the PKCS#11 token
@@ -183,35 +177,5 @@ public class PKCS11Service {
      */
     public String getProviderName() {
         return pkcs11Provider.getName();
-    }
-    
-    /**
-     * Get PIN from various sources - thread local, header, etc.
-     * This method supports backward compatibility while transitioning to CSC API
-     * 
-     * @return The PIN or null if not found
-     */
-    public String getPIN() {
-        // First check thread local (set by CSC API service)
-        String pin = PinThreadLocal.get();
-        if (pin != null) {
-            return pin;
-        }
-        
-        // Then check header (legacy approach)
-        try {
-            ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-            if (attributes != null) {
-                HttpServletRequest request = attributes.getRequest();
-                pin = request.getHeader(PIN_HEADER);
-                if (pin != null && !pin.isEmpty()) {
-                    return pin;
-                }
-            }
-        } catch (Exception e) {
-            log.warn("Error accessing request attributes", e);
-        }
-        
-        return null;
     }
 }

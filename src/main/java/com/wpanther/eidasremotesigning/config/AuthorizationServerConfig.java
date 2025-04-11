@@ -56,7 +56,7 @@ public class AuthorizationServerConfig {
     @Order(2)
     public SecurityFilterChain resourceServerSecurityFilterChain(HttpSecurity http) throws Exception {
         http
-            .securityMatcher("/certificates/**", "/api/**") // Apply this config to API endpoints
+            .securityMatcher("/csc/v2/**") // Apply this config to CSC API endpoints
             .authorizeHttpRequests(authorize -> authorize
                 .anyRequest().authenticated())
             .oauth2ResourceServer(oauth2 -> oauth2
@@ -75,7 +75,7 @@ public class AuthorizationServerConfig {
                         .anyRequest().authenticated())
                 .csrf(csrf -> csrf
                         .ignoringRequestMatchers("/client-registration", "/h2-console/**")
-                        .ignoringRequestMatchers("/certificates/**") // Disable CSRF for certificate API
+                        .ignoringRequestMatchers("/csc/v2/**") // Disable CSRF for CSC API
                         .ignoringRequestMatchers("/oauth2/**")) // Disable CSRF for OAuth endpoints
                 .headers(
                         headers -> headers.contentSecurityPolicy(csp -> csp.policyDirectives("frame-ancestors 'self'")))

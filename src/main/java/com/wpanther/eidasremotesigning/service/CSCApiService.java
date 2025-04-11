@@ -1,7 +1,6 @@
 package com.wpanther.eidasremotesigning.service;
 
 import com.wpanther.eidasremotesigning.dto.DigestSigningRequest;
-import com.wpanther.eidasremotesigning.dto.DigestSigningResponse;
 import com.wpanther.eidasremotesigning.dto.csc.*;
 import com.wpanther.eidasremotesigning.entity.SigningCertificate;
 import com.wpanther.eidasremotesigning.exception.CertificateException;
@@ -12,6 +11,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.PrivateKey;
+import java.security.Signature;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -27,8 +28,9 @@ public class CSCApiService {
 
     private final SigningCertificateRepository certificateRepository;
     private final SigningCertificateService certificateService;
-    private final RemoteSigningService remoteSigningService;
     private final PKCS11Service pkcs11Service;
+    private final EIDASComplianceService eidasComplianceService;
+    private final SigningLogService signingLogService;
 
     /**
      * List credentials (certificates) available for the client
@@ -138,10 +140,12 @@ public class CSCApiService {
                 throw new SigningException("No hash values provided to sign");
             }
             
-            // Create a digest signing request for our existing service
-            DigestSigningRequest.SignatureType signatureType = DigestSigningRequest.SignatureType.XADES;
+            if (pin == null || pin.isEmpty()) {
+                throw new SigningException("PIN is required for signing operations");
+            }
             
             // Determine signature type from request if specified
+            DigestSigningRequest.SignatureType signatureType = DigestSigningRequest.SignatureType.XADES;
             if (request.getSignatureData().getSignatureAttributes() != null && 
                 request.getSignatureData().getSignatureAttributes().getSignatureType() != null) {
                 String requestedType = request.getSignatureData().getSignatureAttributes().getSignatureType();
@@ -150,50 +154,144 @@ public class CSCApiService {
                 }
             }
             
+            // Find the certificate
+            SigningCertificate certEntity = certificateRepository.findById(credentialID)
+                .orElseThrow(() -> new SigningException("Certificate not found"));
+                
+            // Verify certificate is active
+            if (!certEntity.isActive()) {
+                throw new SigningException("Certificate is not active");
+            }
+            
+            // Load certificate and private key
+            PrivateKey privateKey = certificateService.getPrivateKey(credentialID, pin);
+            X509Certificate certificate = certificateService.getCertificateWithX509(credentialID, pin).getX509Certificate();
+            
+            // Validate hash algorithm
+            String hashAlgo = request.getHashAlgo();
+            if (!isValidHashAlgorithm(hashAlgo)) {
+                throw new SigningException("Unsupported hash algorithm: " + hashAlgo);
+            }
+            
+            // Create digest signing request for eIDAS compliance validation
+            DigestSigningRequest validationRequest = DigestSigningRequest.builder()
+                .certificateId(credentialID)
+                .digestValue(request.getSignatureData().getHashToSign()[0]) // Use first hash for validation
+                .digestAlgorithm(hashAlgo)
+                .signatureType(signatureType)
+                .build();
+            
+            // Verify eIDAS compliance
+            eidasComplianceService.validateEIDASCompliance(validationRequest, certificate);
+            
+            // Determine signature algorithm
+            String signatureAlgorithm = determineSignatureAlgorithm(
+                privateKey.getAlgorithm(), 
+                hashAlgo
+            );
+            
             // Results for multiple hash values
             String[] signatures = new String[request.getSignatureData().getHashToSign().length];
-            String signatureAlgorithm = null;
-            String certificate = null;
+            String certBase64 = Base64.getEncoder().encodeToString(certificate.getEncoded());
             
             // Sign each hash
             for (int i = 0; i < request.getSignatureData().getHashToSign().length; i++) {
                 String hashToSign = request.getSignatureData().getHashToSign()[i];
                 
-                DigestSigningRequest signingRequest = DigestSigningRequest.builder()
-                        .certificateId(credentialID)
-                        .digestValue(hashToSign)
-                        .digestAlgorithm(request.getHashAlgo())
-                        .signatureType(signatureType)
-                        .build();
+                // Decode the hash
+                byte[] hashBytes = Base64.getDecoder().decode(hashToSign);
                 
-                // Set PIN in thread local for service to use
-                PinThreadLocal.set(pin);
-                
-                try {
-                    // Call the existing signing service
-                    DigestSigningResponse signingResponse = remoteSigningService.signDigest(signingRequest);
-                    
-                    // Save results
-                    signatures[i] = signingResponse.getSignatureValue();
-                    signatureAlgorithm = signingResponse.getSignatureAlgorithm();
-                    certificate = signingResponse.getCertificateBase64();
-                } finally {
-                    // Always clear the thread local
-                    PinThreadLocal.remove();
+                // Create signature instance with the appropriate provider
+                Signature signature;
+                if ("PKCS11".equals(certEntity.getStorageType())) {
+                    // For PKCS#11, use the HSM provider
+                    signature = Signature.getInstance(signatureAlgorithm, certEntity.getProviderName());
+                } else {
+                    // For PKCS#12, use the default provider
+                    signature = Signature.getInstance(signatureAlgorithm);
                 }
+                
+                // Initialize the signature
+                signature.initSign(privateKey);
+                
+                // Update with the hash value
+                signature.update(hashBytes);
+                
+                // Generate the signature
+                byte[] signatureBytes = signature.sign();
+                
+                // Encode the signature value
+                signatures[i] = Base64.getEncoder().encodeToString(signatureBytes);
+                
+                // Create a digest signing request for logging
+                DigestSigningRequest logRequest = DigestSigningRequest.builder()
+                    .certificateId(credentialID)
+                    .digestValue(hashToSign)
+                    .digestAlgorithm(hashAlgo)
+                    .signatureType(signatureType)
+                    .build();
+                
+                // Log the successful signing operation
+                signingLogService.logSuccessfulSigning(logRequest, signatureAlgorithm);
             }
             
             // Build and return CSC response
             return CSCSignatureResponse.builder()
                     .signatureAlgorithm(signatureAlgorithm)
                     .signatures(signatures)
-                    .certificate(certificate)
+                    .certificate(certBase64)
                     .build();
         } catch (SigningException se) {
             throw se;
         } catch (Exception e) {
             log.error("Error in signHash", e);
             throw new SigningException("Failed to sign hash: " + e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * Validates if the hash algorithm is supported
+     */
+    private boolean isValidHashAlgorithm(String algorithm) {
+        String upperAlgo = algorithm.toUpperCase();
+        return upperAlgo.equals("SHA-256") || 
+               upperAlgo.equals("SHA-384") || 
+               upperAlgo.equals("SHA-512");
+    }
+    
+    /**
+     * Determines the appropriate signature algorithm based on key and digest algorithms
+     */
+    private String determineSignatureAlgorithm(String keyAlgorithm, String digestAlgorithm) {
+        // Normalize input
+        keyAlgorithm = keyAlgorithm.toUpperCase();
+        digestAlgorithm = digestAlgorithm.toUpperCase();
+        
+        // Map to standard JCA signature algorithm identifiers
+        if (keyAlgorithm.equals("RSA")) {
+            switch (digestAlgorithm) {
+                case "SHA-256":
+                    return "SHA256withRSA";
+                case "SHA-384":
+                    return "SHA384withRSA";
+                case "SHA-512":
+                    return "SHA512withRSA";
+                default:
+                    throw new SigningException("Unsupported digest algorithm for RSA: " + digestAlgorithm);
+            }
+        } else if (keyAlgorithm.equals("EC")) {
+            switch (digestAlgorithm) {
+                case "SHA-256":
+                    return "SHA256withECDSA";
+                case "SHA-384":
+                    return "SHA384withECDSA";
+                case "SHA-512":
+                    return "SHA512withECDSA";
+                default:
+                    throw new SigningException("Unsupported digest algorithm for ECDSA: " + digestAlgorithm);
+            }
+        } else {
+            throw new SigningException("Unsupported key algorithm: " + keyAlgorithm);
         }
     }
     
@@ -276,7 +374,7 @@ public class CSCApiService {
         return null;
     }
 
-        /**
+    /**
      * Extracts PIN from CSC request
      */
     private String extractPinFromRequest(CSCCredentialsListRequest request) {
@@ -299,24 +397,5 @@ public class CSCApiService {
             return ((java.security.interfaces.ECPublicKey) publicKey).getParams().getOrder().bitLength();
         }
         return 0; // Unknown key type
-    }
-    
-    /**
-     * Thread local utility for storing PIN during signing operations
-     */
-    public static class PinThreadLocal {
-        private static final ThreadLocal<String> PIN_HOLDER = new ThreadLocal<>();
-        
-        public static void set(String pin) {
-            PIN_HOLDER.set(pin);
-        }
-        
-        public static String get() {
-            return PIN_HOLDER.get();
-        }
-        
-        public static void remove() {
-            PIN_HOLDER.remove();
-        }
     }
 }
