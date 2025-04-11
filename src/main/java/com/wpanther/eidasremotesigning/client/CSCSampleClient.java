@@ -301,15 +301,24 @@ public class CSCSampleClient {
     }
     
     /**
-     * Lists all certificates available in the PKCS#11 token (legacy endpoint)
+     * Lists all certificates available in the PKCS#11 token (for discovery)
+     * Note: This is a non-CSC API endpoint for token exploration
      */
     public JsonNode listPkcs11Certificates() throws Exception {
+        // Create the request body with PIN
+        ObjectNode requestBody = objectMapper.createObjectNode();
+        ObjectNode credentials = objectMapper.createObjectNode();
+        ObjectNode pin = objectMapper.createObjectNode();
+        pin.put("value", HSM_PIN);
+        credentials.set("pin", pin);
+        requestBody.set("credentials", credentials);
+        
         // Build the request
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(SERVER_URL + "/certificates/pkcs11"))
+                .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + accessToken)
-                .header("X-HSM-PIN", HSM_PIN)
-                .GET()
+                .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
                 .build();
         
         // Send the request
@@ -326,20 +335,27 @@ public class CSCSampleClient {
     }
     
     /**
-     * Associates a PKCS#11 certificate with the client (legacy endpoint)
+     * Associates a PKCS#11 certificate with the client using CSC API
      */
     public JsonNode associatePkcs11Certificate(String certificateAlias) throws Exception {
         // Create the request body
         ObjectNode requestBody = objectMapper.createObjectNode();
+        requestBody.put("clientId", CLIENT_ID);
         requestBody.put("certificateAlias", certificateAlias);
         requestBody.put("description", "Certificate associated via CSC sample client");
         
-        // Build the request
+        // Add credentials with PIN
+        ObjectNode credentials = objectMapper.createObjectNode();
+        ObjectNode pin = objectMapper.createObjectNode();
+        pin.put("value", HSM_PIN);
+        credentials.set("pin", pin);
+        requestBody.set("credentials", credentials);
+        
+        // Build the request using the CSC API endpoint
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(SERVER_URL + "/certificates/pkcs11/associate"))
+                .uri(URI.create(SERVER_URL + "/csc/v2/credentials/associate"))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + accessToken)
-                .header("X-HSM-PIN", HSM_PIN)
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
                 .build();
         
