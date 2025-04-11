@@ -6,8 +6,7 @@ import java.security.Security;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.ResourceLoader;
+
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,12 +19,11 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class PKCS11Config {
 
-    private final ResourceLoader resourceLoader;
 
     @Value("${app.pkcs11.provider:SunPKCS11}")
     private String pkcs11Provider;
     
-    @Value("${app.pkcs11.config-file:classpath:pkcs11.cfg}")
+    @Value("${app.pkcs11.config-file:/app/eidasremotesigning/pkcs11.cfg}")
     private String pkcs11ConfigFile;
     
     @Value("${app.pkcs11.library-path:/usr/lib/softhsm/libsofthsm2.so}")
@@ -49,13 +47,12 @@ public class PKCS11Config {
                 log.info("Initializing SunPKCS11 provider");
                 
                 Provider provider;
-                
-                Resource resource = resourceLoader.getResource(pkcs11ConfigFile);
+    
                 log.info("Using PKCS#11 config file: {}", pkcs11ConfigFile);
                 
                 // Create the provider using the config file
                 provider = Security.getProvider("SunPKCS11");
-                provider = provider.configure(resource.getURL().toString());
+                provider = provider.configure(pkcs11ConfigFile);
                 
                 Security.addProvider(provider);
                 log.info("PKCS#11 provider added successfully: {}", provider.getName());

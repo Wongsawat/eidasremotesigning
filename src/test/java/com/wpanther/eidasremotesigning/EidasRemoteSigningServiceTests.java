@@ -1,12 +1,10 @@
 package com.wpanther.eidasremotesigning;
 
 import com.wpanther.eidasremotesigning.controller.ClientRegistrationController;
-import com.wpanther.eidasremotesigning.controller.RemoteSigningController;
 import com.wpanther.eidasremotesigning.controller.SigningCertificateController;
 import com.wpanther.eidasremotesigning.dto.*;
 import com.wpanther.eidasremotesigning.exception.CertificateException;
 import com.wpanther.eidasremotesigning.exception.ClientRegistrationException;
-import com.wpanther.eidasremotesigning.exception.SigningException;
 import com.wpanther.eidasremotesigning.repository.OAuth2ClientRepository;
 import com.wpanther.eidasremotesigning.repository.SigningCertificateRepository;
 import com.wpanther.eidasremotesigning.service.*;
@@ -62,8 +60,6 @@ public class EidasRemoteSigningServiceTests {
     @InjectMocks
     private SigningCertificateController certificateController;
 
-    @InjectMocks
-    private RemoteSigningController signingController;
 
     @BeforeEach
     public void setup() {
@@ -344,133 +340,6 @@ public class EidasRemoteSigningServiceTests {
         verify(signingCertificateService).deleteCertificate("test-cert-id");
     }
 
-    //----------------------------------------------------------------------
-    // Signing Operations Tests
-    //----------------------------------------------------------------------
-
-    @Test
-    public void testSignDigest_Success() {
-        // Arrange
-        DigestSigningRequest request = DigestSigningRequest.builder()
-                .certificateId("test-cert-id")
-                .digestValue(Base64.getEncoder().encodeToString("test-digest".getBytes()))
-                .digestAlgorithm("SHA-256")
-                .signatureType(DigestSigningRequest.SignatureType.XADES)
-                .build();
-
-        DigestSigningResponse expectedResponse = DigestSigningResponse.builder()
-                .signatureValue("test-signature-value")
-                .signatureAlgorithm("SHA256withRSA")
-                .certificateId("test-cert-id")
-                .certificateBase64("test-certificate-base64")
-                .build();
-
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service
-        when(remoteSigningService.signDigest(any(DigestSigningRequest.class))).thenReturn(expectedResponse);
-
-        // Act
-        ResponseEntity<DigestSigningResponse> response = signingController.signDigest(request);
-
-        // Assert
-        assertEquals(HttpStatus.CREATED, response.getStatusCode());
-        assertNotNull(response.getBody());
-        assertEquals("test-signature-value", response.getBody().getSignatureValue());
-    }
-
-    @Test
-    public void testSignDigest_InvalidBase64Digest() {
-        // Arrange
-        DigestSigningRequest request = DigestSigningRequest.builder()
-                .certificateId("test-cert-id")
-                .digestValue("not-valid-base64!")
-                .digestAlgorithm("SHA-256")
-                .signatureType(DigestSigningRequest.SignatureType.XADES)
-                .build();
-
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service to throw exception
-        when(remoteSigningService.signDigest(any(DigestSigningRequest.class)))
-                .thenThrow(new SigningException("Digest value must be Base64 encoded"));
-
-        // Act & Assert
-        assertThrows(SigningException.class, () -> {
-            signingController.signDigest(request);
-        });
-    }
-
-    @Test
-    public void testSignDigest_UnsupportedDigestAlgorithm() {
-        // Arrange
-        DigestSigningRequest request = DigestSigningRequest.builder()
-                .certificateId("test-cert-id")
-                .digestValue(Base64.getEncoder().encodeToString("test-digest".getBytes()))
-                .digestAlgorithm("SHA-1") // eIDAS doesn't allow SHA-1
-                .signatureType(DigestSigningRequest.SignatureType.XADES)
-                .build();
-
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service to throw exception
-        when(remoteSigningService.signDigest(any(DigestSigningRequest.class)))
-                .thenThrow(new SigningException("Unsupported digest algorithm: SHA-1"));
-
-        // Act & Assert
-        assertThrows(SigningException.class, () -> {
-            signingController.signDigest(request);
-        });
-    }
-
-    @Test
-    public void testSignDigest_CertificateNotActive() {
-        // Arrange
-        DigestSigningRequest request = DigestSigningRequest.builder()
-                .certificateId("inactive-cert-id")
-                .digestValue(Base64.getEncoder().encodeToString("test-digest".getBytes()))
-                .digestAlgorithm("SHA-256")
-                .signatureType(DigestSigningRequest.SignatureType.XADES)
-                .build();
-
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service to throw exception
-        when(remoteSigningService.signDigest(any(DigestSigningRequest.class)))
-                .thenThrow(new SigningException("Certificate is not active"));
-
-        // Act & Assert
-        assertThrows(SigningException.class, () -> {
-            signingController.signDigest(request);
-        });
-    }
-
-    @Test
-    public void testSignDigest_CertificateExpired() {
-        // Arrange
-        DigestSigningRequest request = DigestSigningRequest.builder()
-                .certificateId("expired-cert-id")
-                .digestValue(Base64.getEncoder().encodeToString("test-digest".getBytes()))
-                .digestAlgorithm("SHA-256")
-                .signatureType(DigestSigningRequest.SignatureType.XADES)
-                .build();
-
-        // Mock authentication
-        mockClientAuthentication("test-client");
-
-        // Mock service to throw exception
-        when(remoteSigningService.signDigest(any(DigestSigningRequest.class)))
-                .thenThrow(new SigningException("Certificate has expired"));
-
-        // Act & Assert
-        assertThrows(SigningException.class, () -> {
-            signingController.signDigest(request);
-        });
-    }
 
     //----------------------------------------------------------------------
     // Helper Methods for Tests

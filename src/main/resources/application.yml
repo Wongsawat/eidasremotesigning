@@ -40,6 +40,6 @@ app:
     # Slot index to use 
     slot-list-index: 0
     # Whether to use a config file instead of programmatic config
-    use-config-file: false
+    use-config-file: true
     # Path to config file if use-config-file is true
-    config-file: classpath:pkcs11.cfg
+    config-file: /home/wpanther/projects/eidasremotesigning/src/main/resources/pkcs11.cfg
