@@ -1,7 +1,6 @@
 package com.wpanther.eidasremotesigning;
 
 import com.wpanther.eidasremotesigning.controller.ClientRegistrationController;
-import com.wpanther.eidasremotesigning.controller.SigningCertificateController;
 import com.wpanther.eidasremotesigning.dto.*;
 import com.wpanther.eidasremotesigning.exception.ClientRegistrationException;
 import com.wpanther.eidasremotesigning.repository.OAuth2ClientRepository;
@@ -50,8 +49,6 @@ public class EidasRemoteSigningServiceTests {
     @InjectMocks
     private ClientRegistrationController clientRegistrationController;
 
-    @InjectMocks
-    private SigningCertificateController certificateController;
 
 
     @BeforeEach

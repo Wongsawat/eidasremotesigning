@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.URI;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -74,6 +75,17 @@ public class CSCApiController {
         CSCCertificateInfo response = cscApiService.getCredentialInfo(request, credentialID);
         return ResponseEntity.ok(response);
     }
+
+    @PostMapping("/credentials/associate")
+public ResponseEntity<CSCCertificateInfo> associateCertificate(
+        @Valid @RequestBody CSCAssociateCertificateRequest request) {
+    log.debug("CSC API: Request to associate certificate with alias: {}, client: {}", 
+            request.getCertificateAlias(), request.getClientId());
+    
+    CSCCertificateInfo response = cscApiService.associateCertificate(request);
+    return ResponseEntity.created(URI.create("/csc/v2/credentials/info?credentialID=" + response.getId()))
+            .body(response);
+}
 
     /**
      * Sign hash(es) with the specified credential

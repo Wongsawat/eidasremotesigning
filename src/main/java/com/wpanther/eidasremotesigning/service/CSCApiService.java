@@ -5,6 +5,7 @@ import com.wpanther.eidasremotesigning.dto.csc.*;
 import com.wpanther.eidasremotesigning.entity.SigningCertificate;
 import com.wpanther.eidasremotesigning.exception.CertificateException;
 import com.wpanther.eidasremotesigning.exception.SigningException;
+import com.wpanther.eidasremotesigning.repository.OAuth2ClientRepository;
 import com.wpanther.eidasremotesigning.repository.SigningCertificateRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -14,9 +15,11 @@ import org.springframework.transaction.annotation.Transactional;
 import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.cert.X509Certificate;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Service implementing the Cloud Signature Consortium API v2.0 functionality
@@ -31,6 +34,7 @@ public class CSCApiService {
     private final PKCS11Service pkcs11Service;
     private final EIDASComplianceService eidasComplianceService;
     private final SigningLogService signingLogService;
+    private final OAuth2ClientRepository oauth2ClientRepository;
 
     /**
      * List credentials (certificates) available for the client
@@ -39,20 +43,20 @@ public class CSCApiService {
     public CSCCredentialsListResponse listCredentials(CSCCredentialsListRequest request) {
         try {
             String clientId = request.getClientId();
-            
+
             // Get PIN from request if provided
             String pin = extractPinFromRequest(request);
-            
+
             // Find all certificates for the client
             List<SigningCertificate> certificates = certificateRepository.findByClientId(clientId);
-            
+
             // Convert to CSC certificate info
             List<CSCCertificateInfo> cscCertificates = new ArrayList<>();
-            
+
             for (SigningCertificate cert : certificates) {
                 try {
                     X509Certificate x509Cert;
-                    
+
                     if ("PKCS11".equals(cert.getStorageType())) {
                         // For PKCS#11 certs, we need the PIN
                         if (pin == null) {
@@ -65,20 +69,20 @@ public class CSCApiService {
                         // For PKCS#12 certs
                         x509Cert = certificateService.loadCertificateFromKeystore(cert);
                     }
-                    
+
                     cscCertificates.add(mapToCscCertificateInfo(cert, x509Cert));
                 } catch (Exception e) {
                     // Log error but continue with other certificates
                     log.error("Error loading certificate {}: {}", cert.getId(), e.getMessage());
                 }
             }
-            
+
             // Apply maxResults limit if provided
-            if (request.getMaxResults() != null && request.getMaxResults() > 0 && 
+            if (request.getMaxResults() != null && request.getMaxResults() > 0 &&
                     cscCertificates.size() > request.getMaxResults()) {
                 cscCertificates = cscCertificates.subList(0, request.getMaxResults());
             }
-            
+
             return CSCCredentialsListResponse.builder()
                     .certificates(cscCertificates)
                     .build();
@@ -96,11 +100,11 @@ public class CSCApiService {
         try {
             String clientId = request.getClientId();
             String pin = extractPinFromRequest(request);
-            
+
             // Find the certificate by ID and client ID
             SigningCertificate cert = certificateRepository.findByIdAndClientId(credentialID, clientId)
                     .orElseThrow(() -> new CertificateException("Certificate not found"));
-            
+
             // Load the X509Certificate
             X509Certificate x509Cert;
             if ("PKCS11".equals(cert.getStorageType())) {
@@ -113,7 +117,7 @@ public class CSCApiService {
                 // For PKCS#12
                 x509Cert = certificateService.loadCertificateFromKeystore(cert);
             }
-            
+
             return mapToCscCertificateInfo(cert, x509Cert);
         } catch (CertificateException ce) {
             throw ce;
@@ -132,75 +136,75 @@ public class CSCApiService {
             String clientId = request.getClientId();
             String credentialID = request.getCredentialID();
             String pin = extractPinFromRequest(request);
-            
+
             // Validate request
-            if (request.getSignatureData() == null || 
-                request.getSignatureData().getHashToSign() == null ||
-                request.getSignatureData().getHashToSign().length == 0) {
+            if (request.getSignatureData() == null ||
+                    request.getSignatureData().getHashToSign() == null ||
+                    request.getSignatureData().getHashToSign().length == 0) {
                 throw new SigningException("No hash values provided to sign");
             }
-            
+
             if (pin == null || pin.isEmpty()) {
                 throw new SigningException("PIN is required for signing operations");
             }
-            
+
             // Determine signature type from request if specified
             DigestSigningRequest.SignatureType signatureType = DigestSigningRequest.SignatureType.XADES;
-            if (request.getSignatureData().getSignatureAttributes() != null && 
-                request.getSignatureData().getSignatureAttributes().getSignatureType() != null) {
+            if (request.getSignatureData().getSignatureAttributes() != null &&
+                    request.getSignatureData().getSignatureAttributes().getSignatureType() != null) {
                 String requestedType = request.getSignatureData().getSignatureAttributes().getSignatureType();
                 if ("PAdES".equalsIgnoreCase(requestedType)) {
                     signatureType = DigestSigningRequest.SignatureType.PADES;
                 }
             }
-            
+
             // Find the certificate
             SigningCertificate certEntity = certificateRepository.findById(credentialID)
-                .orElseThrow(() -> new SigningException("Certificate not found"));
-                
+                    .orElseThrow(() -> new SigningException("Certificate not found"));
+
             // Verify certificate is active
             if (!certEntity.isActive()) {
                 throw new SigningException("Certificate is not active");
             }
-            
+
             // Load certificate and private key
             PrivateKey privateKey = certificateService.getPrivateKey(credentialID, pin);
-            X509Certificate certificate = certificateService.getCertificateWithX509(credentialID, pin).getX509Certificate();
-            
+            X509Certificate certificate = certificateService.getCertificateWithX509(credentialID, pin)
+                    .getX509Certificate();
+
             // Validate hash algorithm
             String hashAlgo = request.getHashAlgo();
             if (!isValidHashAlgorithm(hashAlgo)) {
                 throw new SigningException("Unsupported hash algorithm: " + hashAlgo);
             }
-            
+
             // Create digest signing request for eIDAS compliance validation
             DigestSigningRequest validationRequest = DigestSigningRequest.builder()
-                .certificateId(credentialID)
-                .digestValue(request.getSignatureData().getHashToSign()[0]) // Use first hash for validation
-                .digestAlgorithm(hashAlgo)
-                .signatureType(signatureType)
-                .build();
-            
+                    .certificateId(credentialID)
+                    .digestValue(request.getSignatureData().getHashToSign()[0]) // Use first hash for validation
+                    .digestAlgorithm(hashAlgo)
+                    .signatureType(signatureType)
+                    .build();
+
             // Verify eIDAS compliance
             eidasComplianceService.validateEIDASCompliance(validationRequest, certificate);
-            
+
             // Determine signature algorithm
             String signatureAlgorithm = determineSignatureAlgorithm(
-                privateKey.getAlgorithm(), 
-                hashAlgo
-            );
-            
+                    privateKey.getAlgorithm(),
+                    hashAlgo);
+
             // Results for multiple hash values
             String[] signatures = new String[request.getSignatureData().getHashToSign().length];
             String certBase64 = Base64.getEncoder().encodeToString(certificate.getEncoded());
-            
+
             // Sign each hash
             for (int i = 0; i < request.getSignatureData().getHashToSign().length; i++) {
                 String hashToSign = request.getSignatureData().getHashToSign()[i];
-                
+
                 // Decode the hash
                 byte[] hashBytes = Base64.getDecoder().decode(hashToSign);
-                
+
                 // Create signature instance with the appropriate provider
                 Signature signature;
                 if ("PKCS11".equals(certEntity.getStorageType())) {
@@ -210,31 +214,31 @@ public class CSCApiService {
                     // For PKCS#12, use the default provider
                     signature = Signature.getInstance(signatureAlgorithm);
                 }
-                
+
                 // Initialize the signature
                 signature.initSign(privateKey);
-                
+
                 // Update with the hash value
                 signature.update(hashBytes);
-                
+
                 // Generate the signature
                 byte[] signatureBytes = signature.sign();
-                
+
                 // Encode the signature value
                 signatures[i] = Base64.getEncoder().encodeToString(signatureBytes);
-                
+
                 // Create a digest signing request for logging
                 DigestSigningRequest logRequest = DigestSigningRequest.builder()
-                    .certificateId(credentialID)
-                    .digestValue(hashToSign)
-                    .digestAlgorithm(hashAlgo)
-                    .signatureType(signatureType)
-                    .build();
-                
+                        .certificateId(credentialID)
+                        .digestValue(hashToSign)
+                        .digestAlgorithm(hashAlgo)
+                        .signatureType(signatureType)
+                        .build();
+
                 // Log the successful signing operation
                 signingLogService.logSuccessfulSigning(logRequest, signatureAlgorithm);
             }
-            
+
             // Build and return CSC response
             return CSCSignatureResponse.builder()
                     .signatureAlgorithm(signatureAlgorithm)
@@ -248,25 +252,26 @@ public class CSCApiService {
             throw new SigningException("Failed to sign hash: " + e.getMessage(), e);
         }
     }
-    
+
     /**
      * Validates if the hash algorithm is supported
      */
     private boolean isValidHashAlgorithm(String algorithm) {
         String upperAlgo = algorithm.toUpperCase();
-        return upperAlgo.equals("SHA-256") || 
-               upperAlgo.equals("SHA-384") || 
-               upperAlgo.equals("SHA-512");
+        return upperAlgo.equals("SHA-256") ||
+                upperAlgo.equals("SHA-384") ||
+                upperAlgo.equals("SHA-512");
     }
-    
+
     /**
-     * Determines the appropriate signature algorithm based on key and digest algorithms
+     * Determines the appropriate signature algorithm based on key and digest
+     * algorithms
      */
     private String determineSignatureAlgorithm(String keyAlgorithm, String digestAlgorithm) {
         // Normalize input
         keyAlgorithm = keyAlgorithm.toUpperCase();
         digestAlgorithm = digestAlgorithm.toUpperCase();
-        
+
         // Map to standard JCA signature algorithm identifiers
         if (keyAlgorithm.equals("RSA")) {
             switch (digestAlgorithm) {
@@ -294,11 +299,12 @@ public class CSCApiService {
             throw new SigningException("Unsupported key algorithm: " + keyAlgorithm);
         }
     }
-    
+
     /**
      * Maps a certificate entity and X509Certificate to CSC certificate info format
      */
-    private CSCCertificateInfo mapToCscCertificateInfo(SigningCertificate cert, X509Certificate x509Cert) throws Exception {
+    private CSCCertificateInfo mapToCscCertificateInfo(SigningCertificate cert, X509Certificate x509Cert)
+            throws Exception {
         // Extract certificate details
         String subject = x509Cert.getSubjectX500Principal().getName();
         String issuerDN = x509Cert.getIssuerX500Principal().getName();
@@ -306,26 +312,33 @@ public class CSCApiService {
         long validFrom = x509Cert.getNotBefore().getTime();
         long validTo = x509Cert.getNotAfter().getTime();
         String certBase64 = Base64.getEncoder().encodeToString(x509Cert.getEncoded());
-        
+
         // Extract key information
         String keyAlgo = x509Cert.getPublicKey().getAlgorithm();
         Integer keyLength = getKeySize(x509Cert.getPublicKey());
-        
+
         // Extract key usage if available
         String[] keyUsage = null;
         boolean[] keyUsageBits = x509Cert.getKeyUsage();
         if (keyUsageBits != null) {
             List<String> usages = new ArrayList<>();
-            if (keyUsageBits[0]) usages.add("digitalSignature");
-            if (keyUsageBits[1]) usages.add("nonRepudiation");
-            if (keyUsageBits[2]) usages.add("keyEncipherment");
-            if (keyUsageBits[3]) usages.add("dataEncipherment");
-            if (keyUsageBits[4]) usages.add("keyAgreement");
-            if (keyUsageBits[5]) usages.add("keyCertSign");
-            if (keyUsageBits[6]) usages.add("cRLSign");
+            if (keyUsageBits[0])
+                usages.add("digitalSignature");
+            if (keyUsageBits[1])
+                usages.add("nonRepudiation");
+            if (keyUsageBits[2])
+                usages.add("keyEncipherment");
+            if (keyUsageBits[3])
+                usages.add("dataEncipherment");
+            if (keyUsageBits[4])
+                usages.add("keyAgreement");
+            if (keyUsageBits[5])
+                usages.add("keyCertSign");
+            if (keyUsageBits[6])
+                usages.add("cRLSign");
             keyUsage = usages.toArray(new String[0]);
         }
-        
+
         // Build certificate details
         CSCCertificateInfo.CSCCertificateDetails certDetails = CSCCertificateInfo.CSCCertificateDetails.builder()
                 .subject(subject)
@@ -336,13 +349,13 @@ public class CSCApiService {
                 .validTo(validTo)
                 .certificate(certBase64)
                 .build();
-        
+
         // Build key info
         CSCCertificateInfo.CSCKeyInfo keyInfo = CSCCertificateInfo.CSCKeyInfo.builder()
                 .algo(keyAlgo)
                 .length(keyLength)
                 .build();
-        
+
         // Build PIN info
         CSCCertificateInfo.CSCPINInfo pinInfo = CSCCertificateInfo.CSCPINInfo.builder()
                 .presence("PKCS11".equals(cert.getStorageType()) ? "mandatory" : "notRequired")
@@ -350,7 +363,7 @@ public class CSCApiService {
                 .label("HSM PIN")
                 .description("PIN for accessing the PKCS#11 token")
                 .build();
-        
+
         // Build and return complete certificate info
         return CSCCertificateInfo.builder()
                 .id(cert.getId())
@@ -361,14 +374,14 @@ public class CSCApiService {
                 .authMode("explicit")
                 .build();
     }
-    
+
     /**
      * Extracts PIN from CSC request
      */
     private String extractPinFromRequest(CSCSignatureRequest request) {
-        if (request.getCredentials() != null && 
-            request.getCredentials().getPin() != null && 
-            request.getCredentials().getPin().getValue() != null) {
+        if (request.getCredentials() != null &&
+                request.getCredentials().getPin() != null &&
+                request.getCredentials().getPin().getValue() != null) {
             return request.getCredentials().getPin().getValue();
         }
         return null;
@@ -378,6 +391,69 @@ public class CSCApiService {
      * Extracts PIN from CSC request
      */
     private String extractPinFromRequest(CSCCredentialsListRequest request) {
+        if (request.getCredentials() != null &&
+                request.getCredentials().getPin() != null &&
+                request.getCredentials().getPin().getValue() != null) {
+            return request.getCredentials().getPin().getValue();
+        }
+        return null;
+    }
+
+        /**
+     * Associates an existing PKCS#11 certificate with a client
+     * @param request The association request
+     * @return The associated certificate info
+     */
+    @Transactional
+    public CSCCertificateInfo associateCertificate(CSCAssociateCertificateRequest request) {
+        try {
+            String clientId = request.getClientId();
+            String pin = extractPinFromRequest(request);
+            
+            if (pin == null || pin.isEmpty()) {
+                throw new CertificateException("PIN is required to access PKCS#11 token");
+            }
+            
+            // Verify client exists
+            if (!oauth2ClientRepository.existsByClientId(clientId)) {
+                throw new CertificateException("Invalid OAuth2 client ID. Client does not exist.");
+            }
+            
+            // Verify certificate exists in the HSM
+            X509Certificate certificate = pkcs11Service.getCertificate(request.getCertificateAlias(), pin);
+            
+            // Verify private key is available
+            if (!pkcs11Service.validateCertificateAndKey(request.getCertificateAlias(), pin)) {
+                throw new CertificateException("Private key not found for certificate with alias: " + request.getCertificateAlias());
+            }
+            
+            // Create entity for the certificate association
+            SigningCertificate certEntity = SigningCertificate.builder()
+                .id(UUID.randomUUID().toString())
+                .description(request.getDescription())
+                .storageType("PKCS11")
+                .certificateAlias(request.getCertificateAlias())
+                .providerName(pkcs11Service.getProviderName())
+                .slotId(request.getSlotId())
+                .active(true)
+                .clientId(clientId)
+                .createdAt(Instant.now())
+                .build();
+                
+            certificateRepository.save(certEntity);
+            
+            // Map to CSC certificate info format
+            return mapToCscCertificateInfo(certEntity, certificate);
+        } catch (Exception e) {
+            log.error("Error associating certificate", e);
+            throw new CertificateException("Failed to associate PKCS#11 certificate: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Extracts PIN from CSC association request
+     */
+    private String extractPinFromRequest(CSCAssociateCertificateRequest request) {
         if (request.getCredentials() != null && 
             request.getCredentials().getPin() != null && 
             request.getCredentials().getPin().getValue() != null) {
@@ -385,7 +461,7 @@ public class CSCApiService {
         }
         return null;
     }
-    
+
     /**
      * Estimates the key size based on the public key
      */
