@@ -58,6 +58,8 @@ public class AuthorizationServerConfig {
         http
             .securityMatcher("/csc/v2/**") // Apply this config to CSC API endpoints
             .authorizeHttpRequests(authorize -> authorize
+                .requestMatchers("/csc/v2/info").permitAll() // Allow public access to service info endpoint
+                .requestMatchers("/csc/v2/oauth2/**").permitAll() // Allow public access to OAuth2 endpoints
                 .anyRequest().authenticated())
             .oauth2ResourceServer(oauth2 -> oauth2
                 .jwt(Customizer.withDefaults())) // Configure as OAuth2 resource server with JWT

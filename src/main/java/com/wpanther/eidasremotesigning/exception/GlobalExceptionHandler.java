@@ -1,11 +1,17 @@
 package com.wpanther.eidasremotesigning.exception;
 
+import com.wpanther.eidasremotesigning.controller.CSCOAuth2Controller.CSCOAuth2Exception;
+import com.wpanther.eidasremotesigning.dto.csc.CSCErrorResponse;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.context.request.ServletWebRequest;
+import org.springframework.web.context.request.WebRequest;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -15,6 +21,7 @@ import java.util.Map;
 
 @ControllerAdvice
 @Slf4j
+@Order(Ordered.HIGHEST_PRECEDENCE)
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(CertificateException.class)
@@ -55,12 +62,50 @@ public class GlobalExceptionHandler {
         
         return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
     }
-
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponse> handleGenericException(Exception ex) {
+    
+    /**
+     * Handle OAuth2 exceptions for CSC API
+     */
+    @ExceptionHandler(CSCOAuth2Exception.class)
+    public ResponseEntity<Map<String, Object>> handleOAuth2Exception(CSCOAuth2Exception ex) {
+        log.error("OAuth2 error: {}", ex.getMessage());
+        
+        Map<String, Object> error = new HashMap<>();
+        error.put("error", ex.getError());
+        error.put("error_description", ex.getMessage());
+        
+        return new ResponseEntity<>(error, HttpStatus.BAD_REQUEST);
+    }
+    
+    /**
+     * Handle CSC API exceptions using the CSC error format
+     */
+    @ExceptionHandler({Exception.class})
+    public ResponseEntity<Object> handleException(Exception ex, WebRequest request) {
         log.error("Unexpected error", ex);
-        return createErrorResponse("An unexpected error occurred: " + ex.getMessage(), 
-                HttpStatus.INTERNAL_SERVER_ERROR);
+        
+        String path = ((ServletWebRequest)request).getRequest().getRequestURI();
+        
+        // Check if it's a CSC API request
+        if (path.startsWith("/csc/v2/")) {
+            CSCErrorResponse errorResponse = CSCErrorResponse.builder()
+                    .error("server.error")
+                    .message("An unexpected error occurred: " + ex.getMessage())
+                    .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
+                    .path(path)
+                    .timestamp(Instant.now().toEpochMilli())
+                    .build();
+            
+            return new ResponseEntity<>(errorResponse, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+        
+        // Default error format
+        ErrorResponse errorResponse = new ErrorResponse(
+            "An unexpected error occurred: " + ex.getMessage(),
+            HttpStatus.INTERNAL_SERVER_ERROR.value(),
+            Instant.now()
+        );
+        return new ResponseEntity<>(errorResponse, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
     private ResponseEntity<ErrorResponse> createErrorResponse(String message, HttpStatus status) {
