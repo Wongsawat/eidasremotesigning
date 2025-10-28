@@ -23,10 +23,10 @@ public class SigningCertificate {
     @Column(length = 255)
     private String description;
 
-    // Storage type - PKCS11 or PKCS12 (for backward compatibility)
+    // Storage type - PKCS11, PKCS12, or AWSKMS
     @Column(nullable = false)
     private String storageType;
-    
+
     // Certificate alias (label) in the PKCS#11 token
     @Column(nullable = false)
     private String certificateAlias;
@@ -34,7 +34,7 @@ public class SigningCertificate {
     // Path to keystore file - only used if storageType is PKCS12
     @Column
     private String keystorePath;
-    
+
     // Password for keystore - only used if storageType is PKCS12
     @Column
     private String keystorePassword;
@@ -42,10 +42,22 @@ public class SigningCertificate {
     // Provider name for PKCS#11 (e.g., "SunPKCS11-SoftHSM")
     @Column
     private String providerName;
-    
+
     // Slot ID for PKCS#11
     @Column
     private Integer slotId;
+
+    // AWS KMS Key ID or ARN - only used if storageType is AWSKMS
+    @Column(length = 2048)
+    private String kmsKeyId;
+
+    // AWS Region for KMS - only used if storageType is AWSKMS
+    @Column(length = 50)
+    private String awsRegion;
+
+    // X.509 Certificate in Base64-encoded DER format - stored for AWSKMS
+    @Column(length = 8192)
+    private String certificateData;
 
     @Column(nullable = false)
     private boolean active;

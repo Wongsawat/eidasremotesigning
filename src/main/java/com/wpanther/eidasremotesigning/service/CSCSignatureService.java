@@ -8,13 +8,9 @@ import com.wpanther.eidasremotesigning.entity.TransactionAuthorization;
 import com.wpanther.eidasremotesigning.exception.SigningException;
 import com.wpanther.eidasremotesigning.repository.SigningCertificateRepository;
 import com.wpanther.eidasremotesigning.repository.SigningLogRepository;
-import com.wpanther.eidasremotesigning.util.DocumentFormatUtil;
 import eu.europa.esig.dss.enumerations.DigestAlgorithm;
-import eu.europa.esig.dss.model.DSSDocument;
-import eu.europa.esig.dss.model.InMemoryDocument;
 import eu.europa.esig.dss.model.TimestampBinary;
 import eu.europa.esig.dss.service.tsp.OnlineTSPSource;
-import eu.europa.esig.dss.spi.x509.tsp.TSPSource;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -49,7 +45,9 @@ public class CSCSignatureService {
     private final SigningLogRepository signingLogRepository;
     private final CSCAuthorizationService cscAuthorizationService;
     private final EIDASComplianceService eidasComplianceService;
-    private final DocumentFormatUtil documentFormatUtil;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private AWSKMSService awskmsService;
     
     // TSP timestamp service URL
     @Value("${app.tsp.url:http://tsa.belgium.be/connect}")
@@ -95,32 +93,42 @@ public class CSCSignatureService {
                 throw new SigningException("Certificate is not active");
             }
             
-            // Get the certificate and private key
+            // Get the certificate
             X509Certificate certificate;
-            PrivateKey privateKey;
-            
+            PrivateKey privateKey = null;  // Will be null for AWS KMS
+
             if (pin != null) {
                 // Load using PIN
                 certificate = certificateService.getCertificateWithX509(credentialId, pin)
                         .getX509Certificate();
-                privateKey = certificateService.getPrivateKey(credentialId, pin);
+
+                // Only load private key if not AWS KMS
+                if (!"AWSKMS".equals(certEntity.getStorageType())) {
+                    privateKey = certificateService.getPrivateKey(credentialId, pin);
+                }
             } else {
                 // We should have a transaction with SAD already validated
                 if (transaction == null) {
                     throw new SigningException("Internal error: No transaction with valid SAD");
                 }
-                
-                // We need the PIN from the request in this case
-                if (request.getCredentials() == null || 
-                    request.getCredentials().getPin() == null ||
-                    request.getCredentials().getPin().getValue() == null) {
-                    throw new SigningException("PIN is required for signing with PKCS#11 token");
+
+                // For non-KMS, we need the PIN
+                if (!"AWSKMS".equals(certEntity.getStorageType())) {
+                    if (request.getCredentials() == null ||
+                        request.getCredentials().getPin() == null ||
+                        request.getCredentials().getPin().getValue() == null) {
+                        throw new SigningException("PIN is required for signing with PKCS#11 token");
+                    }
+
+                    String tokenPin = request.getCredentials().getPin().getValue();
+                    certificate = certificateService.getCertificateWithX509(credentialId, tokenPin)
+                            .getX509Certificate();
+                    privateKey = certificateService.getPrivateKey(credentialId, tokenPin);
+                } else {
+                    // For AWS KMS, no PIN needed
+                    certificate = certificateService.getCertificateWithX509(credentialId, null)
+                            .getX509Certificate();
                 }
-                
-                String tokenPin = request.getCredentials().getPin().getValue();
-                certificate = certificateService.getCertificateWithX509(credentialId, tokenPin)
-                        .getX509Certificate();
-                privateKey = certificateService.getPrivateKey(credentialId, tokenPin);
             }
             
             // Validate hash algorithm
@@ -184,23 +192,47 @@ public class CSCSignatureService {
             }
             
             // Create signature
-            Signature signature;
-            if ("PKCS11".equals(certEntity.getStorageType())) {
-                // For PKCS#11, use the HSM provider
-                signature = Signature.getInstance(signatureAlgorithm, certEntity.getProviderName());
+            byte[] signatureBytes;
+
+            if ("AWSKMS".equals(certEntity.getStorageType())) {
+                // For AWS KMS, use the KMS service to sign
+                if (awskmsService == null) {
+                    throw new SigningException("AWS KMS is not enabled or configured");
+                }
+
+                // Get the key algorithm type
+                String keyAlgorithm = awskmsService.getKeyAlgorithmType(certEntity.getKmsKeyId());
+
+                // Sign using AWS KMS
+                signatureBytes = awskmsService.signDigest(
+                    certEntity.getKmsKeyId(),
+                    digestBytes,
+                    hashAlgo,
+                    keyAlgorithm
+                );
+
+                log.info("Signed digest using AWS KMS key: {}", certEntity.getKmsKeyId());
+
             } else {
-                // For PKCS#12, use the default provider
-                signature = Signature.getInstance(signatureAlgorithm);
+                // For PKCS#11 and PKCS#12, use standard Java cryptography
+                Signature signature;
+                if ("PKCS11".equals(certEntity.getStorageType())) {
+                    // For PKCS#11, use the HSM provider
+                    signature = Signature.getInstance(signatureAlgorithm, certEntity.getProviderName());
+                } else {
+                    // For PKCS#12, use the default provider
+                    signature = Signature.getInstance(signatureAlgorithm);
+                }
+
+                // Initialize the signature
+                signature.initSign(privateKey);
+
+                // Update with the digest value
+                signature.update(digestBytes);
+
+                // Generate the signature
+                signatureBytes = signature.sign();
             }
-            
-            // Initialize the signature
-            signature.initSign(privateKey);
-            
-            // Update with the digest value
-            signature.update(digestBytes);
-            
-            // Generate the signature
-            byte[] signatureBytes = signature.sign();
             
             // This would be replaced with actual document signing for PDF/XML documents
             // Here we're just implementing the basic functionality
@@ -222,8 +254,6 @@ public class CSCSignatureService {
             // Log the successful signing operation
             signingLogService.logSuccessfulSigning(validationRequest, signatureAlgorithm);
             
-            // Base64 encode the signature
-            String signatureBase64 = Base64.getEncoder().encodeToString(signatureBytes);
             String certificateBase64 = Base64.getEncoder().encodeToString(certificate.getEncoded());
             
             // Return response with signature
@@ -298,7 +328,6 @@ public class CSCSignatureService {
     @Transactional
     public CSCTimestampResponse createTimestamp(CSCTimestampRequest request) {
         try {
-            String clientId = request.getClientId();
             String hashAlgo = request.getHashAlgo();
             
             // Validate hash algorithm

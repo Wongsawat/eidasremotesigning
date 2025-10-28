@@ -133,7 +133,6 @@ public class CSCApiService {
     @Transactional
     public CSCSignatureResponse signHash(CSCSignatureRequest request) {
         try {
-            String clientId = request.getClientId();
             String credentialID = request.getCredentialID();
             String pin = extractPinFromRequest(request);
 

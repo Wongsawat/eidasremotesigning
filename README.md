@@ -1,6 +1,6 @@
 # eIDAS Remote Signing Service
 
-A Spring Boot application that provides eIDAS-compliant remote signing capabilities using PKCS#11 hardware tokens.
+A Spring Boot application that provides eIDAS-compliant remote signing capabilities with support for **PKCS#11 hardware tokens** and **AWS KMS**.
 
 ## Overview
 
@@ -8,22 +8,56 @@ This service allows for secure digital signing operations compliant with the eID
 
 Key features:
 - OAuth2 client registration and authentication
-- Certificate management for PKCS#11 hardware tokens
+- **Multiple key storage options**: PKCS#11 HSM, AWS KMS, PKCS#12
 - XAdES and PAdES signature formats
 - Comprehensive audit logging and metrics
-- Integration with Hardware Security Modules (HSM)
+- Integration with Hardware Security Modules (HSM) and AWS KMS
 - Complete CSC API v2.0 implementation
 - Transaction-based authorization for secure signing
 - Timestamp generation and validation
+- **Cloud-native with AWS KMS support** ☁️
+
+## Storage Options
+
+| Storage Type | Security | Production Ready | Use Case |
+|--------------|----------|------------------|----------|
+| **AWS KMS** ☁️ | ⭐⭐⭐⭐⭐ | ✅ Yes | Cloud-native, scalable production |
+| **PKCS#11 HSM** | ⭐⭐⭐⭐⭐ | ✅ Yes | On-premise production with hardware HSM |
+| **PKCS#12** | ⭐⭐ | ⚠️ Testing only | Development and testing |
 
 ## System Requirements
 
 - Java 17 or higher
-- SoftHSM or other PKCS#11 compliant HSM
 - Maven 3.6+
 - A compatible database (H2 is included for development)
+- **Optional**: SoftHSM or other PKCS#11 compliant HSM
+- **Optional**: AWS account with KMS access
 
 ## Quick Start
+
+Choose your key management approach:
+
+### Option A: AWS KMS (Recommended for Cloud Deployment) ☁️
+
+**5-Minute Setup:**
+
+```bash
+# 1. Create KMS key
+aws kms create-key --key-usage SIGN_VERIFY --key-spec RSA_2048
+
+# 2. Configure application
+export AWS_KMS_ENABLED=true
+export AWS_REGION=us-east-1
+
+# 3. Build and run
+mvn clean package
+java -jar target/eidasremotesigning-0.0.1-SNAPSHOT.jar
+```
+
+📘 **[Complete AWS KMS Setup Guide →](AWS_KMS_SETUP_GUIDE.md)**
+📋 **[Quick Reference →](AWS_KMS_QUICK_REFERENCE.md)**
+
+### Option B: PKCS#11 Hardware HSM (For On-Premise Deployment)
 
 ### 1. Configure PKCS#11 Provider
 
@@ -39,7 +73,7 @@ app:
     use-config-file: true
     config-file: /path/to/pkcs11.cfg
   tsp:
-    url: http://tsa.belgium.be/connect  # Timestamp service URL
+    url: https://freetsa.org/tsr  # Timestamp service URL (HTTPS, free, RFC 3161 compliant)
 ```
 
 ### 2. Build the Application

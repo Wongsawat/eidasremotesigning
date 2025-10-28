@@ -37,9 +37,26 @@ app:
     name: SoftHSM
     # Path to PKCS#11 library - adjust based on installation
     library-path: ${PKCS11_LIB_PATH:/usr/lib/softhsm/libsofthsm2.so}
-    # Slot index to use 
+    # Slot index to use
     slot-list-index: 0
     # Whether to use a config file instead of programmatic config
     use-config-file: true
     # Path to config file if use-config-file is true
     config-file: /home/wpanther/projects/eidasremotesigning/src/main/resources/pkcs11.cfg
+
+  # AWS KMS Configuration
+  aws:
+    kms:
+      # Enable or disable AWS KMS integration
+      enabled: ${AWS_KMS_ENABLED:false}
+      # AWS region where KMS keys are located
+      region: ${AWS_REGION:us-east-1}
+      # Use default AWS credentials chain (IAM roles, env vars, etc.)
+      use-default-credentials: ${AWS_USE_DEFAULT_CREDENTIALS:true}
+      # Optional: Explicit AWS credentials (not recommended for production)
+      access-key-id: ${AWS_ACCESS_KEY_ID:}
+      secret-access-key: ${AWS_SECRET_ACCESS_KEY:}
+
+  # Timestamp Authority Configuration
+  tsp:
+    url: ${TSP_URL:https://freetsa.org/tsr}

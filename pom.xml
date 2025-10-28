@@ -133,6 +133,18 @@
 			<version>1.78.1</version>
 		</dependency>
 
+		<!-- AWS SDK for KMS -->
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>kms</artifactId>
+			<version>2.20.26</version>
+		</dependency>
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>sts</artifactId>
+			<version>2.20.26</version>
+		</dependency>
+
 		<!-- Testing -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>

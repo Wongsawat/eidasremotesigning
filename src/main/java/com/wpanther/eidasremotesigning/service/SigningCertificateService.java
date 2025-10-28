@@ -25,6 +25,8 @@ import com.wpanther.eidasremotesigning.dto.CertificateSummary;
 import com.wpanther.eidasremotesigning.dto.CertificateUpdateRequest;
 import com.wpanther.eidasremotesigning.dto.Pkcs11CertificateAssociateRequest;
 import com.wpanther.eidasremotesigning.dto.Pkcs11CertificateInfo;
+import com.wpanther.eidasremotesigning.dto.AWSKMSCertificateAssociateRequest;
+import com.wpanther.eidasremotesigning.dto.AWSKMSKeyInfo;
 import com.wpanther.eidasremotesigning.entity.SigningCertificate;
 import com.wpanther.eidasremotesigning.exception.CertificateException;
 import com.wpanther.eidasremotesigning.repository.OAuth2ClientRepository;
@@ -41,13 +43,16 @@ public class SigningCertificateService {
     private final SigningCertificateRepository certificateRepository;
     private final OAuth2ClientRepository oauth2ClientRepository;
     private final PKCS11Service pkcs11Service;
-    
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private AWSKMSService awskmsService;
+
     @Value("${app.keystore.base-path:/app/keystores}")
     private String keystoreBasePath;
     
     /**
      * Lists all certificates from PKCS#11 token
-     * 
+     *
      * @param pin The PIN to access the PKCS#11 token
      */
     public List<Pkcs11CertificateInfo> listPkcs11Certificates(String pin) {
@@ -55,6 +60,75 @@ public class SigningCertificateService {
             throw new CertificateException("PIN is required to access PKCS#11 token");
         }
         return pkcs11Service.listCertificates(pin);
+    }
+
+    /**
+     * Lists all signing keys from AWS KMS
+     */
+    public List<AWSKMSKeyInfo> listAWSKMSKeys() {
+        if (awskmsService == null) {
+            throw new CertificateException("AWS KMS is not enabled or configured");
+        }
+        return awskmsService.listSigningKeys();
+    }
+
+    /**
+     * Associates an AWS KMS key with a client certificate
+     *
+     * @param request The AWS KMS certificate association request
+     */
+    @Transactional
+    public CertificateDetailResponse associateAWSKMSCertificate(AWSKMSCertificateAssociateRequest request) {
+        try {
+            if (awskmsService == null) {
+                throw new CertificateException("AWS KMS is not enabled or configured");
+            }
+
+            // Get client ID from authentication
+            String clientId = getCurrentClientId();
+
+            // Verify client exists
+            if (!oauth2ClientRepository.existsByClientId(clientId)) {
+                throw new CertificateException("Invalid OAuth2 client ID. Client does not exist.");
+            }
+
+            // Validate the KMS key
+            if (!awskmsService.validateKey(request.getKmsKeyId())) {
+                throw new CertificateException("KMS key not found or not enabled: " + request.getKmsKeyId());
+            }
+
+            // Get key info
+            AWSKMSKeyInfo keyInfo = awskmsService.getKeyInfo(request.getKmsKeyId());
+
+            // Decode and validate the certificate
+            byte[] certBytes = Base64.getDecoder().decode(request.getCertificateBase64());
+            java.io.ByteArrayInputStream bis = new java.io.ByteArrayInputStream(certBytes);
+            java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X.509");
+            X509Certificate certificate = (X509Certificate) cf.generateCertificate(bis);
+
+            // Create a unique alias using the key ID
+            String alias = "kms-" + keyInfo.getKeyId();
+
+            // Create entity for the certificate association
+            SigningCertificate certEntity = SigningCertificate.builder()
+                .id(UUID.randomUUID().toString())
+                .description(request.getDescription() != null ? request.getDescription() : "AWS KMS Key: " + keyInfo.getKeyId())
+                .storageType("AWSKMS")
+                .certificateAlias(alias)
+                .kmsKeyId(request.getKmsKeyId())
+                .awsRegion(request.getAwsRegion())
+                .certificateData(request.getCertificateBase64())
+                .active(true)
+                .clientId(clientId)
+                .createdAt(Instant.now())
+                .build();
+
+            certificateRepository.save(certEntity);
+
+            return mapToDetailResponse(certEntity, certificate);
+        } catch (Exception e) {
+            throw new CertificateException("Failed to associate AWS KMS certificate: " + e.getMessage(), e);
+        }
     }
     
     /**
@@ -149,6 +223,16 @@ public class SigningCertificateService {
                 throw new CertificateException("PIN is required to access PKCS#11 token");
             }
             x509Cert = pkcs11Service.getCertificate(certificate.getCertificateAlias(), pin);
+        } else if ("AWSKMS".equals(certificate.getStorageType())) {
+            // For AWS KMS, load from stored certificate data
+            try {
+                byte[] certBytes = Base64.getDecoder().decode(certificate.getCertificateData());
+                java.io.ByteArrayInputStream bis = new java.io.ByteArrayInputStream(certBytes);
+                java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X.509");
+                x509Cert = (X509Certificate) cf.generateCertificate(bis);
+            } catch (Exception e) {
+                throw new CertificateException("Failed to load AWS KMS certificate: " + e.getMessage(), e);
+            }
         } else {
             // For PKCS#12, load from file
             try {
@@ -324,16 +408,22 @@ public class SigningCertificateService {
     
     /**
      * Gets the private key for a certificate
-     * 
+     * Note: For AWS KMS certificates, this will throw an exception as keys cannot be exported
+     *
      * @param certificateId The certificate ID
      * @param pin The PIN for PKCS#11 token
-     * @return The private key
+     * @return The private key (only for PKCS11 and PKCS12)
      */
     public PrivateKey getPrivateKey(String certificateId, String pin) {
         try {
             SigningCertificate cert = certificateRepository.findById(certificateId)
                 .orElseThrow(() -> new CertificateException("Certificate not found"));
-            
+
+            if ("AWSKMS".equals(cert.getStorageType())) {
+                throw new CertificateException(
+                    "Private keys stored in AWS KMS cannot be exported. Use AWS KMS signing operations instead.");
+            }
+
             if ("PKCS11".equals(cert.getStorageType())) {
                 // For PKCS#11, get from token
                 if (pin == null || pin.isEmpty()) {
@@ -346,13 +436,13 @@ public class SigningCertificateService {
                 try (FileInputStream fis = new FileInputStream(cert.getKeystorePath())) {
                     keyStore.load(fis, cert.getKeystorePassword().toCharArray());
                     PrivateKey privateKey = (PrivateKey) keyStore.getKey(
-                        cert.getCertificateAlias(), 
+                        cert.getCertificateAlias(),
                         cert.getKeystorePassword().toCharArray());
-                    
+
                     if (privateKey == null) {
                         throw new CertificateException("Private key not found in keystore");
                     }
-                    
+
                     return privateKey;
                 }
             }
