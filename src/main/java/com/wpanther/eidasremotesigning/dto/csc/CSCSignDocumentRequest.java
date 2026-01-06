@@ -39,7 +39,14 @@ public class CSCSignDocumentRequest {
     private SignatureAttributes signatureAttributes;
     
     private SignatureOptions signatureOptions;
-    
+
     // Base64 encoded document for direct signing
     private String document;
+
+    /**
+     * Enable asynchronous operation mode
+     * If true, returns operationID immediately instead of waiting for signature completion
+     * Default: null (treated as false for backward compatibility)
+     */
+    private Boolean async;
 }

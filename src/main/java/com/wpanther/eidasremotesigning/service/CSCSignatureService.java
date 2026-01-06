@@ -2,10 +2,12 @@ package com.wpanther.eidasremotesigning.service;
 
 import com.wpanther.eidasremotesigning.dto.DigestSigningRequest;
 import com.wpanther.eidasremotesigning.dto.csc.*;
+import com.wpanther.eidasremotesigning.entity.AsyncOperation;
 import com.wpanther.eidasremotesigning.entity.SigningCertificate;
 import com.wpanther.eidasremotesigning.entity.SigningLog;
 import com.wpanther.eidasremotesigning.entity.TransactionAuthorization;
 import com.wpanther.eidasremotesigning.exception.SigningException;
+import com.wpanther.eidasremotesigning.repository.AsyncOperationRepository;
 import com.wpanther.eidasremotesigning.repository.SigningCertificateRepository;
 import com.wpanther.eidasremotesigning.repository.SigningLogRepository;
 import eu.europa.esig.dss.enumerations.DigestAlgorithm;
@@ -13,7 +15,9 @@ import eu.europa.esig.dss.model.TimestampBinary;
 import eu.europa.esig.dss.service.tsp.OnlineTSPSource;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,7 +30,9 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 
 import lombok.Builder;
 import lombok.Data;
@@ -45,23 +51,83 @@ public class CSCSignatureService {
     private final SigningLogRepository signingLogRepository;
     private final CSCAuthorizationService cscAuthorizationService;
     private final EIDASComplianceService eidasComplianceService;
+    private final AsyncOperationRepository asyncOperationRepository;
+    private final AsyncOperationService asyncOperationService;
+
+    @Qualifier("asyncSigningExecutor")
+    private final Executor asyncExecutor;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private AWSKMSService awskmsService;
-    
+
     // TSP timestamp service URL
     @Value("${app.tsp.url:http://tsa.belgium.be/connect}")
     private String tspUrl;
-    
+
+    @Value("${app.async.operation-expiry-minutes:30}")
+    private int operationExpiryMinutes;
+
     // Cache of ongoing asynchronous signing operations
     private final Map<String, SigningOperation> ongoingOperations = new ConcurrentHashMap<>();
     
     /**
      * Sign a complete document instead of just a hash
+     * Supports both synchronous and asynchronous modes
      */
     @Transactional
     public CSCSignDocumentResponse signDocument(CSCSignDocumentRequest request) {
+        // Check if async mode is requested
+        if (Boolean.TRUE.equals(request.getAsync())) {
+            return signDocumentAsync(request);
+        }
+
+        // Execute synchronously for backward compatibility
+        return executeSignDocument(request);
+    }
+
+    /**
+     * Handle asynchronous signDocument request
+     * Creates an async operation and returns operationID immediately
+     */
+    private CSCSignDocumentResponse signDocumentAsync(CSCSignDocumentRequest request) {
+        // Create async operation
+        AsyncOperation operation = asyncOperationService.createOperation(
+                request.getClientId(),
+                AsyncOperationService.TYPE_SIGN_DOCUMENT,
+                operationExpiryMinutes
+        );
+
+        // Submit async task
+        CompletableFuture.runAsync(() -> executeAsyncSignDocument(operation.getId(), request), asyncExecutor);
+
+        // Return immediately with operationID
+        return CSCSignDocumentResponse.builder()
+                .operationID(operation.getId())
+                .build();
+    }
+
+    /**
+     * Execute signDocument asynchronously in background thread
+     * Updates AsyncOperation with result or error
+     */
+    @Async("asyncSigningExecutor")
+    void executeAsyncSignDocument(String operationId, CSCSignDocumentRequest request) {
         try {
+            CSCSignDocumentResponse result = executeSignDocument(request);
+            asyncOperationService.updateOperationSuccess(operationId, result);
+            log.info("Async signDocument completed successfully: operationId={}", operationId);
+        } catch (Exception e) {
+            asyncOperationService.updateOperationFailure(operationId, e.getMessage());
+            log.error("Async signDocument failed: operationId={}", operationId, e);
+        }
+    }
+
+    /**
+     * Core logic for signing a document
+     * Shared by both sync and async execution paths
+     */
+    private CSCSignDocumentResponse executeSignDocument(CSCSignDocumentRequest request) {
+        try{
             String clientId = request.getClientId();
             String credentialId = request.getCredentialID();
             String pin = extractPinFromRequest(request);
@@ -275,47 +341,62 @@ public class CSCSignatureService {
     
     /**
      * Get the status of an asynchronous signing operation
+     * Uses AsyncOperation entity instead of SigningLog
      */
     @Transactional(readOnly = true)
     public CSCSignatureStatusResponse getSignatureStatus(CSCSignatureStatusRequest request) {
         try {
             String clientId = request.getClientId();
-            String transactionId = request.getTransactionID();
-            
-            // Check if we have this transaction in our cache
-            SigningOperation operation = ongoingOperations.get(transactionId);
-            
-            if (operation == null) {
-                // Check if we have a completed operation in the database
-                SigningLog log = signingLogRepository.findById(transactionId)
-                        .orElseThrow(() -> new SigningException("Signature transaction not found"));
-                
-                // Check if the operation belongs to this client
-                if (!log.getClientId().equals(clientId)) {
-                    throw new SigningException("Signature transaction not found for this client");
+            String operationId = request.getTransactionID();
+
+            // Get operation (checks cache first, then DB)
+            AsyncOperation operation = asyncOperationService
+                    .getOperation(operationId, clientId)
+                    .orElseThrow(() -> new SigningException("Operation not found"));
+
+            // Build base response
+            CSCSignatureStatusResponse.CSCSignatureStatusResponseBuilder builder =
+                    CSCSignatureStatusResponse.builder()
+                            .status(operation.getStatus());
+
+            // Add error message if failed
+            if (AsyncOperationService.STATUS_FAILED.equals(operation.getStatus())) {
+                builder.errorMessage(operation.getErrorMessage());
+            }
+
+            // Add results if completed
+            if (AsyncOperationService.STATUS_COMPLETED.equals(operation.getStatus()) &&
+                    operation.getResultData() != null) {
+
+                // Deserialize based on operation type
+                if (AsyncOperationService.TYPE_SIGN_HASH.equals(operation.getOperationType())) {
+                    CSCSignatureResponse result = asyncOperationService.deserializeResult(
+                            operation.getResultData(),
+                            CSCSignatureResponse.class
+                    );
+                    builder.signatures(result.getSignatures())
+                            .signatureAlgorithm(result.getSignatureAlgorithm())
+                            .certificate(result.getCertificate())
+                            .timestampData(result.getTimestampData());
+
+                } else if (AsyncOperationService.TYPE_SIGN_DOCUMENT.equals(operation.getOperationType())) {
+                    CSCSignDocumentResponse result = asyncOperationService.deserializeResult(
+                            operation.getResultData(),
+                            CSCSignDocumentResponse.class
+                    );
+                    builder.signedDocument(result.getSignedDocument())
+                            .signedDocumentDigest(result.getSignedDocumentDigest())
+                            .transactionID(result.getTransactionID())
+                            .signatureAlgorithm(result.getSignatureAlgorithm())
+                            .certificate(result.getCertificate())
+                            .timestampData(result.getTimestampData());
                 }
-                
-                // Determine status
-                String status = "SUCCESS".equals(log.getStatus()) ? "COMPLETED" : "FAILED";
-                String errorMessage = "FAILED".equals(log.getStatus()) ? log.getErrorMessage() : null;
-                
-                return CSCSignatureStatusResponse.builder()
-                        .status(status)
-                        .errorMessage(errorMessage)
-                        .build();
             }
-            
-            // Check if the operation belongs to this client
-            if (!operation.getClientId().equals(clientId)) {
-                throw new SigningException("Signature transaction not found for this client");
-            }
-            
-            // Return current status
-            return CSCSignatureStatusResponse.builder()
-                    .status(operation.getStatus())
-                    .errorMessage(operation.getErrorMessage())
-                    .build();
-            
+
+            return builder.build();
+
+        } catch (SigningException se) {
+            throw se;
         } catch (Exception e) {
             log.error("Error in getSignatureStatus", e);
             throw new SigningException("Failed to get signature status: " + e.getMessage(), e);

@@ -33,6 +33,13 @@ public class CSCSignatureRequest{
     
     @NotNull(message = "Data to sign is required")
     private SignatureData signatureData;
-    
+
     private SignatureOptions signatureOptions;
+
+    /**
+     * Enable asynchronous operation mode
+     * If true, returns operationID immediately instead of waiting for signature completion
+     * Default: null (treated as false for backward compatibility)
+     */
+    private Boolean async;
 }

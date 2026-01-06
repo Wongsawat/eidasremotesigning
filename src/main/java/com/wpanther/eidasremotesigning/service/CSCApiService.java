@@ -2,6 +2,7 @@ package com.wpanther.eidasremotesigning.service;
 
 import com.wpanther.eidasremotesigning.dto.DigestSigningRequest;
 import com.wpanther.eidasremotesigning.dto.csc.*;
+import com.wpanther.eidasremotesigning.entity.AsyncOperation;
 import com.wpanther.eidasremotesigning.entity.SigningCertificate;
 import com.wpanther.eidasremotesigning.exception.CertificateException;
 import com.wpanther.eidasremotesigning.exception.SigningException;
@@ -9,6 +10,9 @@ import com.wpanther.eidasremotesigning.repository.OAuth2ClientRepository;
 import com.wpanther.eidasremotesigning.repository.SigningCertificateRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,6 +24,8 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 /**
  * Service implementing the Cloud Signature Consortium API v2.0 functionality
@@ -35,6 +41,13 @@ public class CSCApiService {
     private final EIDASComplianceService eidasComplianceService;
     private final SigningLogService signingLogService;
     private final OAuth2ClientRepository oauth2ClientRepository;
+    private final AsyncOperationService asyncOperationService;
+
+    @Qualifier("asyncSigningExecutor")
+    private final Executor asyncExecutor;
+
+    @Value("${app.async.operation-expiry-minutes:30}")
+    private int operationExpiryMinutes;
 
     /**
      * List credentials (certificates) available for the client
@@ -129,9 +142,61 @@ public class CSCApiService {
 
     /**
      * Sign hash(es) using the specified credential
+     * Supports both synchronous and asynchronous modes
      */
     @Transactional
     public CSCSignatureResponse signHash(CSCSignatureRequest request) {
+        // Check if async mode is requested
+        if (Boolean.TRUE.equals(request.getAsync())) {
+            return signHashAsync(request);
+        }
+
+        // Execute synchronously for backward compatibility
+        return executeSignHash(request);
+    }
+
+    /**
+     * Handle asynchronous signHash request
+     * Creates an async operation and returns operationID immediately
+     */
+    private CSCSignatureResponse signHashAsync(CSCSignatureRequest request) {
+        // Create async operation
+        AsyncOperation operation = asyncOperationService.createOperation(
+                request.getClientId(),
+                AsyncOperationService.TYPE_SIGN_HASH,
+                operationExpiryMinutes
+        );
+
+        // Submit async task
+        CompletableFuture.runAsync(() -> executeAsyncSignHash(operation.getId(), request), asyncExecutor);
+
+        // Return immediately with operationID
+        return CSCSignatureResponse.builder()
+                .operationID(operation.getId())
+                .build();
+    }
+
+    /**
+     * Execute signHash asynchronously in background thread
+     * Updates AsyncOperation with result or error
+     */
+    @Async("asyncSigningExecutor")
+    void executeAsyncSignHash(String operationId, CSCSignatureRequest request) {
+        try {
+            CSCSignatureResponse result = executeSignHash(request);
+            asyncOperationService.updateOperationSuccess(operationId, result);
+            log.info("Async signHash completed successfully: operationId={}", operationId);
+        } catch (Exception e) {
+            asyncOperationService.updateOperationFailure(operationId, e.getMessage());
+            log.error("Async signHash failed: operationId={}", operationId, e);
+        }
+    }
+
+    /**
+     * Core logic for signing hash(es)
+     * Shared by both sync and async execution paths
+     */
+    private CSCSignatureResponse executeSignHash(CSCSignatureRequest request) {
         try {
             String credentialID = request.getCredentialID();
             String pin = extractPinFromRequest(request);

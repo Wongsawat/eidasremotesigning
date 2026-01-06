@@ -58,3 +58,19 @@ app:
   # Timestamp Authority Configuration
   tsp:
     url: ${TSP_URL:https://freetsa.org/tsr}
+
+  # Asynchronous Operation Configuration
+  async:
+    # Thread pool configuration
+    core-pool-size: 5
+    max-pool-size: 10
+    queue-capacity: 100
+    thread-name-prefix: "async-signing-"
+    # Operation expiry time in minutes
+    operation-expiry-minutes: 30
+    # Cleanup scheduler cron expression (every hour)
+    cleanup-cron: "0 0 * * * *"
+    # Deletion scheduler cron expression (daily at 2 AM)
+    deletion-cron: "0 0 2 * * *"
+    # Retention period for completed operations in days
+    retention-days: 7

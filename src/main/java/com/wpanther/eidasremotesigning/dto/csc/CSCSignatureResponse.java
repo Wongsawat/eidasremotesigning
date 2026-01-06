@@ -17,6 +17,12 @@ import java.util.Map;
 @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class CSCSignatureResponse {
+    /**
+     * Operation ID for asynchronous operations
+     * Present only when async=true in the request
+     */
+    private String operationID;
+
     private String signatureAlgorithm;
     private String[] signatures;
     private String certificate;

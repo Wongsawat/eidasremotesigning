@@ -27,4 +27,10 @@ public class CSCInfoResponse {
     private Map<String, Object> authType;
     private List<String> methods;
     private List<String> timeStampPolicies;
+
+    /**
+     * Indicates whether the service supports asynchronous operation mode
+     * CSC API v2.0 specification field
+     */
+    private Boolean asynchronousOperationMode;
 }

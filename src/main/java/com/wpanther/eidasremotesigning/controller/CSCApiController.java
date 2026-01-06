@@ -31,22 +31,32 @@ public class CSCApiController {
     @GetMapping("/info")
     public ResponseEntity<CSCInfoResponse> getInfo() {
         log.debug("CSC API: Request for service information");
-        
+
         // Build response with service capabilities according to CSC API v2.0
         CSCInfoResponse response = CSCInfoResponse.builder()
                 .name("eIDAS Remote Signing Service")
                 .region("EU")
                 .lang(List.of("en"))
-                .description("eIDAS compliant remote signing service supporting PKCS#11 hardware tokens")
-                .methods(List.of("credentials/list", "credentials/info", "signatures/signHash"))
+                .description("eIDAS compliant remote signing service supporting PKCS#11 hardware tokens, AWS KMS, and PKCS#12 keystores with asynchronous operation support")
+                .methods(List.of(
+                    "credentials/list",
+                    "credentials/info",
+                    "credentials/authorize",
+                    "credentials/extendTransaction",
+                    "signatures/signHash",
+                    "signatures/signDocument",
+                    "signatures/timestamp",
+                    "signatures/status"
+                ))
+                .asynchronousOperationMode(true)  // Always enabled per user preference
                 .build();
-                
+
         // Add authentication type information
         Map<String, Object> authType = new HashMap<>();
         authType.put("implicit", true);
         authType.put("oauth2", true);
         response.setAuthType(authType);
-        
+
         return ResponseEntity.ok(response);
     }
 

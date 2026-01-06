@@ -19,6 +19,12 @@ import java.util.Map;
 @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class CSCSignDocumentResponse {
+    /**
+     * Operation ID for asynchronous operations
+     * Present only when async=true in the request
+     */
+    private String operationID;
+
     private String transactionID;
     private String signedDocument;
     private String signedDocumentDigest;
