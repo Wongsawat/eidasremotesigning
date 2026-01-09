@@ -13,6 +13,7 @@ Key features:
 - Comprehensive audit logging and metrics
 - Integration with Hardware Security Modules (HSM) and AWS KMS
 - Complete CSC API v2.0 implementation
+- **Asynchronous signing operations for large documents and batch processing**
 - Transaction-based authorization for secure signing
 - Timestamp generation and validation
 - **Cloud-native with AWS KMS support** ☁️
@@ -131,9 +132,9 @@ The service implements the following CSC API v2.0 endpoints:
 #### Signing Operations
 | Endpoint | Purpose |
 |----------|---------|
-| POST /csc/v2/signatures/signHash | Sign a hash value |
-| POST /csc/v2/signatures/signDocument | Sign a complete document |
-| POST /csc/v2/signatures/status | Check status of asynchronous signing |
+| POST /csc/v2/signatures/signHash | Sign a hash value (sync/async) |
+| POST /csc/v2/signatures/signDocument | Sign a complete document (sync/async) |
+| POST /csc/v2/signatures/status | Check status of asynchronous operations |
 | POST /csc/v2/signatures/timestamp | Create a timestamp for a document or hash |
 
 #### OAuth2 Endpoints
@@ -221,6 +222,80 @@ curl -X POST http://localhost:9000/csc/v2/signatures/signDocument \
          }'
 ```
 
+### Example: Asynchronous Document Signing
+
+For large documents or batch operations, use async signing to avoid timeouts:
+
+**Step 1: Submit async signing request**
+
+```bash
+curl -X POST http://localhost:9000/csc/v2/signatures/signDocument \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+     -d '{
+           "clientId": "your_client_id",
+           "credentialID": "your_certificate_id",
+           "document": "base64_encoded_large_document",
+           "hashAlgo": "SHA-256",
+           "async": true,
+           "credentials": {
+             "pin": {
+               "value": "1234"
+             }
+           },
+           "signatureAttributes": {
+             "signatureType": "PAdES"
+           }
+         }'
+```
+
+**Response (immediate):**
+```json
+{
+  "operationID": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Step 2: Poll for operation status**
+
+```bash
+curl -X POST http://localhost:9000/csc/v2/signatures/status \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+     -d '{
+           "clientId": "your_client_id",
+           "transactionID": "550e8400-e29b-41d4-a716-446655440000"
+         }'
+```
+
+**Response (while processing):**
+```json
+{
+  "status": "PROCESSING"
+}
+```
+
+**Response (when complete):**
+```json
+{
+  "status": "COMPLETED",
+  "signedDocument": "base64_encoded_signed_document",
+  "signedDocumentDigest": "base64_digest",
+  "signatureAlgorithm": "SHA256withRSA",
+  "certificate": "base64_certificate",
+  "timestampData": {
+    "timestamp": "...",
+    "timestampGenerationTime": 1609459200000
+  }
+}
+```
+
+**Possible Status Values:**
+- `PROCESSING` - Operation in progress
+- `COMPLETED` - Successfully signed
+- `FAILED` - Operation failed (check `errorMessage` field)
+- `EXPIRED` - Operation timed out
+
 ### Example: Create a Timestamp
 
 ```bash
@@ -299,8 +374,10 @@ The application can be configured through the `application.yml` file. Key config
 - Database connection details
 - OAuth2 server settings
 - PKCS#11 provider settings
+- AWS KMS settings
 - Keystore base path
 - Timestamp service URL
+- **Async operation thread pool and lifecycle settings**
 - Logging levels
 
 ## Security Considerations
@@ -337,11 +414,52 @@ The service supports customized signature parameters through the signature attri
 
 ### Asynchronous Signing
 
-For large documents or batch signing, use the asynchronous signing endpoints:
+The service provides full asynchronous signing support for high-throughput environments and large documents.
 
-1. Submit a signing request
-2. Receive a transaction ID
-3. Poll the `/csc/v2/signatures/status` endpoint with the transaction ID
+**When to Use Async Signing:**
+- Large PDF documents (>10MB)
+- Batch signing multiple documents
+- Mobile clients with unstable connections
+- High-latency environments
+- Avoiding HTTP timeout issues
+
+**Async Signing Workflow:**
+
+1. **Submit Request**: Add `"async": true` to any signing request
+2. **Receive Operation ID**: Server returns immediately with `operationID`
+3. **Background Processing**: Signing occurs in thread pool
+4. **Poll Status**: Use `/csc/v2/signatures/status` with the `operationID`
+5. **Retrieve Results**: Full signature data returned when `status: COMPLETED`
+
+**Operation Lifecycle:**
+- Operations expire after 30 minutes (configurable)
+- Completed operations retained for 7 days
+- Automatic cleanup removes expired and old operations
+
+**Configuration** (in `application.yml`):
+```yaml
+app:
+  async:
+    core-pool-size: 5                # Minimum worker threads
+    max-pool-size: 10                # Maximum worker threads
+    queue-capacity: 100              # Queue size before rejection
+    thread-name-prefix: "async-signing-"
+    operation-expiry-minutes: 30     # Operation timeout
+    cleanup-cron: "0 0 * * * *"      # Hourly expired cleanup
+    deletion-cron: "0 0 2 * * *"     # Daily old operation deletion
+    retention-days: 7                # Keep completed ops for 7 days
+```
+
+**Performance Tuning:**
+- `core-pool-size`: Set to average concurrent signing operations
+- `max-pool-size`: Set to peak concurrent operations
+- `queue-capacity`: Buffer for traffic spikes
+- `operation-expiry-minutes`: Match client timeout expectations
+
+**Polling Best Practices:**
+- Use exponential backoff: 1s, 2s, 4s, 8s intervals
+- Stop polling after operation expires (default 30 minutes)
+- Cache completed results client-side
 
 ### Timestamping
 
@@ -375,6 +493,13 @@ The service supports timestamping according to RFC 3161:
    - Check timestamp service URL is accessible
    - Verify proper network connectivity
    - Ensure digest algorithm is supported by the TSA
+
+5. **Async Operation Issues**:
+   - **Operation Not Found**: Check `operationID` is correct and hasn't expired
+   - **Status Stuck on PROCESSING**: Check thread pool is not saturated (increase `max-pool-size`)
+   - **Operations Timing Out**: Increase `operation-expiry-minutes` for large documents
+   - **Queue Rejection**: Increase `queue-capacity` or reduce submission rate
+   - **Check thread pool metrics**: Monitor `asyncSigningExecutor` thread pool stats
 
 ## License
 
