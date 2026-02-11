@@ -73,7 +73,7 @@ public class AuthorizationServerConfig {
     public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
         http
                 .authorizeHttpRequests(authorize -> authorize
-                        .requestMatchers("/client-registration", "/h2-console/**").permitAll()
+                        .requestMatchers("/client-registration", "/h2-console/**", "/actuator/health").permitAll()
                         .anyRequest().authenticated())
                 .csrf(csrf -> csrf
                         .ignoringRequestMatchers("/client-registration", "/h2-console/**")
