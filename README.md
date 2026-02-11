@@ -30,9 +30,10 @@ Key features:
 
 - Java 17 or higher
 - Maven 3.6+
-- A compatible database (H2 is included for development)
-- **Optional**: SoftHSM or other PKCS#11 compliant HSM
+- PostgreSQL 12+ (H2 is used for tests)
+- **Optional**: SoftHSM or other PKCS#11 compliant HSM (PKCS#11 can be disabled)
 - **Optional**: AWS account with KMS access
+- **Optional**: Docker for containerized deployment
 
 ## Quick Start
 
@@ -64,15 +65,18 @@ java -jar target/eidasremotesigning-0.0.1-SNAPSHOT.jar
 
 Ensure you have a PKCS#11 provider correctly configured. The default configuration uses SoftHSM. Update the PKCS#11 configuration in `application.yml` for your environment.
 
+PKCS#11 is conditionally loaded and can be disabled if no HSM is available:
+
 ```yaml
 app:
   pkcs11:
+    enabled: true  # Set to false to disable PKCS#11 (no SoftHSM required)
     provider: SunPKCS11
     name: SoftHSM
     library-path: /usr/lib/softhsm/libsofthsm2.so
     slot-list-index: 0
     use-config-file: true
-    config-file: /path/to/pkcs11.cfg
+    config-file: /app/pkcs11.cfg  # Or set PKCS11_CONFIG_FILE env var
   tsp:
     url: https://freetsa.org/tsr  # Timestamp service URL (HTTPS, free, RFC 3161 compliant)
 ```
@@ -90,6 +94,16 @@ java -jar target/eidasremotesigning-0.0.1-SNAPSHOT.jar
 ```
 
 The service will start on port 9000 by default.
+
+### Option C: PKCS#12 Only (For Development/Testing)
+
+To run without any HSM, disable PKCS#11:
+
+```bash
+PKCS11_ENABLED=false java -jar target/eidasremotesigning-0.0.1-SNAPSHOT.jar
+```
+
+Only PKCS#12 keystores will be available for signing operations.
 
 ### 4. Register a Client
 
@@ -366,6 +380,48 @@ The service implements a transaction-based authorization model for secure signin
 
 This follows the CSC API v2.0 specification for secure remote signing.
 
+## Docker Deployment
+
+A Docker setup with SoftHSM pre-installed is available for testing and containerized deployment.
+
+### Build and Run with Docker Compose
+
+```bash
+# Build the JAR first
+mvn clean package -DskipTests
+
+# Start with Docker Compose (from invoice-microservices/docker/)
+docker compose -f docker-compose.test.yml up -d --build eidasremotesigning
+
+# Or use the helper script
+cd ../invoice-microservices
+./scripts/test-containers-start.sh --with-eidas
+```
+
+The Docker image:
+- Uses Alpine Linux with Eclipse Temurin JRE 17
+- Pre-installs SoftHSM (no `apt-get install` on every start)
+- Auto-generates `pkcs11.cfg` and initializes a SoftHSM token on startup
+- Exposes port 9000 with health check on `/actuator/health`
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_URL` | `jdbc:postgresql://localhost:5432/eidasremotesigning` | JDBC database URL |
+| `DB_USERNAME` | `postgres` | Database username |
+| `DB_PASSWORD` | `postgres` | Database password |
+| `KEYSTORE_PATH` | `/app/keystores` | PKCS#12 keystore directory |
+| `PKCS11_ENABLED` | `true` | Enable/disable PKCS#11 HSM support |
+| `PKCS11_CONFIG_FILE` | `/app/pkcs11.cfg` | Path to PKCS#11 config file |
+| `PKCS11_LIB_PATH` | `/usr/lib/softhsm/libsofthsm2.so` | Path to PKCS#11 library |
+| `AWS_KMS_ENABLED` | `false` | Enable AWS KMS backend |
+| `AWS_REGION` | `us-east-1` | AWS region for KMS |
+| `TSP_URL` | `https://freetsa.org/tsr` | RFC 3161 Timestamp Authority URL |
+| `SOFTHSM_TOKEN_LABEL` | `eidas` | SoftHSM token label (Docker only) |
+| `SOFTHSM_SO_PIN` | `1234` | SoftHSM security officer PIN (Docker only) |
+| `SOFTHSM_USER_PIN` | `1234` | SoftHSM user PIN (Docker only) |
+
 ## Configuration Options
 
 The application can be configured through the `application.yml` file. Key configuration areas include:
@@ -373,8 +429,8 @@ The application can be configured through the `application.yml` file. Key config
 - Server port and context path
 - Database connection details
 - OAuth2 server settings
-- PKCS#11 provider settings
-- AWS KMS settings
+- PKCS#11 provider settings (conditionally loaded via `app.pkcs11.enabled`)
+- AWS KMS settings (conditionally loaded via `app.aws.kms.enabled`)
 - Keystore base path
 - Timestamp service URL
 - **Async operation thread pool and lifecycle settings**
@@ -403,10 +459,12 @@ This service is designed to be compliant with:
 
 For production environments, configure the PKCS#11 provider to connect to your HSM:
 
-1. Install the HSM vendor's PKCS#11 library
-2. Update the `app.pkcs11.library-path` property to point to your HSM's library
-3. Configure any HSM-specific settings (slot ID, etc.)
-4. Restart the application
+1. Ensure `app.pkcs11.enabled` is `true` (default)
+2. Install the HSM vendor's PKCS#11 library
+3. Update the `app.pkcs11.library-path` property to point to your HSM's library
+4. Set `PKCS11_CONFIG_FILE` to point to your PKCS#11 config file
+5. Configure any HSM-specific settings (slot ID, etc.)
+6. Restart the application
 
 ### Customizing Signature Parameters
 
@@ -477,6 +535,7 @@ The service supports timestamping according to RFC 3161:
    - Verify the library path is correct
    - Ensure the HSM is properly initialized
    - Check that the slot ID is correct
+   - If no HSM is available, set `PKCS11_ENABLED=false` to disable PKCS#11
 
 2. **Authentication Failures**:
    - Verify client ID and secret
