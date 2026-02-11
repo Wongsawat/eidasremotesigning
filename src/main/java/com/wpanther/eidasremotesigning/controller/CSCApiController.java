@@ -97,16 +97,4 @@ public ResponseEntity<CSCCertificateInfo> associateCertificate(
             .body(response);
 }
 
-    /**
-     * Sign hash(es) with the specified credential
-     */
-    @PostMapping("/signatures/signHash")
-    public ResponseEntity<CSCSignatureResponse> signHash(
-            @Valid @RequestBody CSCSignatureRequest request) {
-        log.debug("CSC API: Signature request for credential: {}, client: {}", 
-                request.getCredentialID(), request.getClientId());
-        
-        CSCSignatureResponse response = cscApiService.signHash(request);
-        return ResponseEntity.ok(response);
-    }
 }

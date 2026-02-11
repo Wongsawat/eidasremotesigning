@@ -42,14 +42,26 @@ public class SigningCertificateService {
 
     private final SigningCertificateRepository certificateRepository;
     private final OAuth2ClientRepository oauth2ClientRepository;
-    private final PKCS11Service pkcs11Service;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private PKCS11Service pkcs11Service;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private AWSKMSService awskmsService;
 
     @Value("${app.keystore.base-path:/app/keystores}")
     private String keystoreBasePath;
-    
+
+    /**
+     * Returns PKCS11Service or throws if not enabled
+     */
+    private PKCS11Service requirePkcs11Service() {
+        if (pkcs11Service == null) {
+            throw new CertificateException("PKCS#11 is not enabled. Configure app.pkcs11.enabled=true and ensure SoftHSM is installed.");
+        }
+        return pkcs11Service;
+    }
+
     /**
      * Lists all certificates from PKCS#11 token
      *
@@ -59,7 +71,7 @@ public class SigningCertificateService {
         if (pin == null || pin.isEmpty()) {
             throw new CertificateException("PIN is required to access PKCS#11 token");
         }
-        return pkcs11Service.listCertificates(pin);
+        return requirePkcs11Service().listCertificates(pin);
     }
 
     /**
@@ -153,10 +165,10 @@ public class SigningCertificateService {
             }
             
             // Verify certificate exists in the HSM
-            X509Certificate certificate = pkcs11Service.getCertificate(request.getCertificateAlias(), pin);
+            X509Certificate certificate = requirePkcs11Service().getCertificate(request.getCertificateAlias(), pin);
             
             // Verify private key is available
-            if (!pkcs11Service.validateCertificateAndKey(request.getCertificateAlias(), pin)) {
+            if (!requirePkcs11Service().validateCertificateAndKey(request.getCertificateAlias(), pin)) {
                 throw new CertificateException("Private key not found for certificate with alias: " + request.getCertificateAlias());
             }
             
@@ -166,7 +178,7 @@ public class SigningCertificateService {
                 .description(request.getDescription())
                 .storageType("PKCS11")
                 .certificateAlias(request.getCertificateAlias())
-                .providerName(pkcs11Service.getProviderName())
+                .providerName(requirePkcs11Service().getProviderName())
                 .slotId(request.getSlotId())
                 .active(true)
                 .clientId(clientId)
@@ -222,7 +234,7 @@ public class SigningCertificateService {
             if (pin == null || pin.isEmpty()) {
                 throw new CertificateException("PIN is required to access PKCS#11 token");
             }
-            x509Cert = pkcs11Service.getCertificate(certificate.getCertificateAlias(), pin);
+            x509Cert = requirePkcs11Service().getCertificate(certificate.getCertificateAlias(), pin);
         } else if ("AWSKMS".equals(certificate.getStorageType())) {
             // For AWS KMS, load from stored certificate data
             try {
@@ -273,7 +285,7 @@ public class SigningCertificateService {
             if (pin == null || pin.isEmpty()) {
                 throw new CertificateException("PIN is required to access PKCS#11 token");
             }
-            x509Cert = pkcs11Service.getCertificate(certificate.getCertificateAlias(), pin);
+            x509Cert = requirePkcs11Service().getCertificate(certificate.getCertificateAlias(), pin);
         } else {
             try {
                 x509Cert = loadCertificateFromKeystore(certificate);
@@ -348,7 +360,7 @@ public class SigningCertificateService {
                 // For PKCS#11, load from token if PIN is provided
                 if (pin != null && !pin.isEmpty()) {
                     try {
-                        x509Cert = pkcs11Service.getCertificate(cert.getCertificateAlias(), pin);
+                        x509Cert = requirePkcs11Service().getCertificate(cert.getCertificateAlias(), pin);
                     } catch (Exception e) {
                         // If we can't access the token, create a minimal summary
                         return createMinimalSummary(cert);
@@ -429,7 +441,7 @@ public class SigningCertificateService {
                 if (pin == null || pin.isEmpty()) {
                     throw new CertificateException("PIN is required to access PKCS#11 token");
                 }
-                return pkcs11Service.getPrivateKey(cert.getCertificateAlias(), pin);
+                return requirePkcs11Service().getPrivateKey(cert.getCertificateAlias(), pin);
             } else {
                 // For PKCS#12, get from file
                 KeyStore keyStore = KeyStore.getInstance("PKCS12");

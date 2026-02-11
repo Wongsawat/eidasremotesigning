@@ -41,7 +41,6 @@ import lombok.Data;
  * Service implementing advanced CSC API signature operations
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class CSCSignatureService {
 
@@ -54,21 +53,43 @@ public class CSCSignatureService {
     private final AsyncOperationRepository asyncOperationRepository;
     private final AsyncOperationService asyncOperationService;
 
-    @Qualifier("asyncSigningExecutor")
     private final Executor asyncExecutor;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private AWSKMSService awskmsService;
 
-    // TSP timestamp service URL
-    @Value("${app.tsp.url:http://tsa.belgium.be/connect}")
     private String tspUrl;
 
-    @Value("${app.async.operation-expiry-minutes:30}")
     private int operationExpiryMinutes;
 
     // Cache of ongoing asynchronous signing operations
     private final Map<String, SigningOperation> ongoingOperations = new ConcurrentHashMap<>();
+
+    public CSCSignatureService(SigningCertificateRepository certificateRepository,
+                                 SigningCertificateService certificateService,
+                                 SigningLogService signingLogService,
+                                 SigningLogRepository signingLogRepository,
+                                 CSCAuthorizationService cscAuthorizationService,
+                                 EIDASComplianceService eidasComplianceService,
+                                 AsyncOperationRepository asyncOperationRepository,
+                                 AsyncOperationService asyncOperationService,
+                                 @Qualifier("asyncSigningExecutor") Executor asyncExecutor,
+                                 @org.springframework.beans.factory.annotation.Autowired(required = false) AWSKMSService awskmsService,
+                                 @Value("${app.tsp.url:http://tsa.belgium.be/connect}") String tspUrl,
+                                 @Value("${app.async.operation-expiry-minutes:30}") int operationExpiryMinutes) {
+        this.certificateRepository = certificateRepository;
+        this.certificateService = certificateService;
+        this.signingLogService = signingLogService;
+        this.signingLogRepository = signingLogRepository;
+        this.cscAuthorizationService = cscAuthorizationService;
+        this.eidasComplianceService = eidasComplianceService;
+        this.asyncOperationRepository = asyncOperationRepository;
+        this.asyncOperationService = asyncOperationService;
+        this.asyncExecutor = asyncExecutor;
+        this.awskmsService = awskmsService;
+        this.tspUrl = tspUrl;
+        this.operationExpiryMinutes = operationExpiryMinutes;
+    }
     
     /**
      * Sign a complete document instead of just a hash

@@ -25,6 +25,7 @@ import static org.mockito.Mockito.*;
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@org.springframework.test.context.ActiveProfiles("test")
 public class EidasRemoteSigningServiceTests {
 
     @Mock

@@ -29,6 +29,8 @@ app:
   
   # PKCS#11 Configuration
   pkcs11:
+    # Enable/disable PKCS#11 HSM support
+    enabled: ${PKCS11_ENABLED:true}
     # PKCS#11 provider to use
     provider: SunPKCS11
     # Name for the provider instance
@@ -40,7 +42,7 @@ app:
     # Whether to use a config file instead of programmatic config
     use-config-file: true
     # Path to config file if use-config-file is true
-    config-file: /home/wpanther/projects/eidasremotesigning/src/main/resources/pkcs11.cfg
+    config-file: ${PKCS11_CONFIG_FILE:/app/pkcs11.cfg}
 
   # AWS KMS Configuration
   aws:

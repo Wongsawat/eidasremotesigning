@@ -31,23 +31,46 @@ import java.util.concurrent.Executor;
  * Service implementing the Cloud Signature Consortium API v2.0 functionality
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class CSCApiService {
 
     private final SigningCertificateRepository certificateRepository;
     private final SigningCertificateService certificateService;
-    private final PKCS11Service pkcs11Service;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private PKCS11Service pkcs11Service;
     private final EIDASComplianceService eidasComplianceService;
     private final SigningLogService signingLogService;
     private final OAuth2ClientRepository oauth2ClientRepository;
     private final AsyncOperationService asyncOperationService;
 
-    @Qualifier("asyncSigningExecutor")
     private final Executor asyncExecutor;
 
-    @Value("${app.async.operation-expiry-minutes:30}")
     private int operationExpiryMinutes;
+
+    public CSCApiService(SigningCertificateRepository certificateRepository,
+                          SigningCertificateService certificateService,
+                          EIDASComplianceService eidasComplianceService,
+                          SigningLogService signingLogService,
+                          OAuth2ClientRepository oauth2ClientRepository,
+                          AsyncOperationService asyncOperationService,
+                          @Qualifier("asyncSigningExecutor") Executor asyncExecutor,
+                          @Value("${app.async.operation-expiry-minutes:30}") int operationExpiryMinutes) {
+        this.certificateRepository = certificateRepository;
+        this.certificateService = certificateService;
+        this.eidasComplianceService = eidasComplianceService;
+        this.signingLogService = signingLogService;
+        this.oauth2ClientRepository = oauth2ClientRepository;
+        this.asyncOperationService = asyncOperationService;
+        this.asyncExecutor = asyncExecutor;
+        this.operationExpiryMinutes = operationExpiryMinutes;
+    }
+
+    private PKCS11Service requirePkcs11Service() {
+        if (pkcs11Service == null) {
+            throw new CertificateException("PKCS#11 is not enabled. Configure app.pkcs11.enabled=true and ensure SoftHSM is installed.");
+        }
+        return pkcs11Service;
+    }
 
     /**
      * List credentials (certificates) available for the client
@@ -77,7 +100,7 @@ public class CSCApiService {
                             log.debug("Skipping PKCS#11 certificate (no PIN provided): {}", cert.getId());
                             continue;
                         }
-                        x509Cert = pkcs11Service.getCertificate(cert.getCertificateAlias(), pin);
+                        x509Cert = requirePkcs11Service().getCertificate(cert.getCertificateAlias(), pin);
                     } else {
                         // For PKCS#12 certs
                         x509Cert = certificateService.loadCertificateFromKeystore(cert);
@@ -125,7 +148,7 @@ public class CSCApiService {
                 if (pin == null) {
                     throw new CertificateException("PIN is required for PKCS#11 certificate access");
                 }
-                x509Cert = pkcs11Service.getCertificate(cert.getCertificateAlias(), pin);
+                x509Cert = requirePkcs11Service().getCertificate(cert.getCertificateAlias(), pin);
             } else {
                 // For PKCS#12
                 x509Cert = certificateService.loadCertificateFromKeystore(cert);
@@ -484,10 +507,10 @@ public class CSCApiService {
             }
             
             // Verify certificate exists in the HSM
-            X509Certificate certificate = pkcs11Service.getCertificate(request.getCertificateAlias(), pin);
+            X509Certificate certificate = requirePkcs11Service().getCertificate(request.getCertificateAlias(), pin);
             
             // Verify private key is available
-            if (!pkcs11Service.validateCertificateAndKey(request.getCertificateAlias(), pin)) {
+            if (!requirePkcs11Service().validateCertificateAndKey(request.getCertificateAlias(), pin)) {
                 throw new CertificateException("Private key not found for certificate with alias: " + request.getCertificateAlias());
             }
             
@@ -497,7 +520,7 @@ public class CSCApiService {
                 .description(request.getDescription())
                 .storageType("PKCS11")
                 .certificateAlias(request.getCertificateAlias())
-                .providerName(pkcs11Service.getProviderName())
+                .providerName(requirePkcs11Service().getProviderName())
                 .slotId(request.getSlotId())
                 .active(true)
                 .clientId(clientId)

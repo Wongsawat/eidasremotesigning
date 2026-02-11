@@ -4,6 +4,7 @@ import java.security.KeyStore;
 import java.security.Provider;
 import java.security.Security;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -15,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
  * Configuration for PKCS#11 HSM integration
  */
 @Configuration
+@ConditionalOnProperty(name = "app.pkcs11.enabled", havingValue = "true", matchIfMissing = true)
 @RequiredArgsConstructor
 @Slf4j
 public class PKCS11Config {

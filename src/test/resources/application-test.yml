@@ -29,3 +29,5 @@ logging:
 app:
   keystore:
     base-path: ${java.io.tmpdir}/test-keystores
+  pkcs11:
+    enabled: false

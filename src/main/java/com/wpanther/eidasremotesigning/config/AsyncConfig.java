@@ -3,9 +3,11 @@ package com.wpanther.eidasremotesigning.config;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.security.SecureRandom;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
 
@@ -35,6 +37,7 @@ public class AsyncConfig {
      * @return configured Executor for async tasks
      */
     @Bean(name = "asyncSigningExecutor")
+    @Primary
     public Executor asyncSigningExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(corePoolSize);
@@ -48,5 +51,15 @@ public class AsyncConfig {
 
         executor.initialize();
         return executor;
+    }
+
+    /**
+     * Provides a SecureRandom bean for generating secure tokens
+     *
+     * @return a new SecureRandom instance
+     */
+    @Bean
+    public SecureRandom secureRandom() {
+        return new SecureRandom();
     }
 }

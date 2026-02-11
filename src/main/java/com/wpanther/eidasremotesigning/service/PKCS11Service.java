@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import com.wpanther.eidasremotesigning.dto.Pkcs11CertificateInfo;
@@ -20,6 +21,7 @@ import lombok.extern.slf4j.Slf4j;
  * Service for interacting with PKCS#11 tokens
  */
 @Service
+@ConditionalOnProperty(name = "app.pkcs11.enabled", havingValue = "true", matchIfMissing = true)
 @RequiredArgsConstructor
 @Slf4j
 public class PKCS11Service {
