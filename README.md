@@ -9,11 +9,13 @@ This service allows for secure digital signing operations compliant with the eID
 Key features:
 - OAuth2 client registration and authentication
 - **Multiple key storage options**: PKCS#11 HSM, AWS KMS, PKCS#12
-- XAdES and PAdES signature formats
+- XAdES and PAdES signature formats with **EU DSS library integration**
+- **SAD (Signature Activation Data) authentication** for CSC API v2.0 compliant signing flows
 - Comprehensive audit logging and metrics
 - Integration with Hardware Security Modules (HSM) and AWS KMS
 - Complete CSC API v2.0 implementation
 - **Asynchronous signing operations for large documents and batch processing**
+- **Full document signing** — returns properly signed PDF (PAdES) and XML (XAdES) documents
 - Transaction-based authorization for secure signing
 - Timestamp generation and validation
 - **Cloud-native with AWS KMS support** ☁️
@@ -186,7 +188,7 @@ curl -X POST http://localhost:9000/csc/v2/credentials/authorize \
          }'
 ```
 
-### Example: Sign a Hash
+### Example: Sign a Hash (with PIN)
 
 ```bash
 curl -X POST http://localhost:9000/csc/v2/signatures/signHash \
@@ -210,7 +212,33 @@ curl -X POST http://localhost:9000/csc/v2/signatures/signHash \
          }'
 ```
 
+### Example: Sign a Hash (with SAD)
+
+Use the SAD token obtained from `/csc/v2/credentials/authorize` instead of a PIN:
+
+```bash
+curl -X POST http://localhost:9000/csc/v2/signatures/signHash \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+     -d '{
+           "clientId": "your_client_id",
+           "credentialID": "your_certificate_id",
+           "SAD": "sad_token_from_authorize",
+           "hashAlgo": "SHA-256",
+           "signatureData": {
+             "hashToSign": ["base64_encoded_hash"],
+             "signatureAttributes": {
+               "signatureType": "XAdES"
+             }
+           }
+         }'
+```
+
 ### Example: Sign a Document
+
+When a Base64-encoded document is provided, the service uses the EU DSS library to produce a properly signed document (PAdES for PDF, XAdES for XML). The signed document is returned in the `signedDocument` response field.
+
+**With PIN:**
 
 ```bash
 curl -X POST http://localhost:9000/csc/v2/signatures/signDocument \
@@ -234,6 +262,36 @@ curl -X POST http://localhost:9000/csc/v2/signatures/signDocument \
              "serverTimestamp": "true"
            }
          }'
+```
+
+**With SAD:**
+
+```bash
+curl -X POST http://localhost:9000/csc/v2/signatures/signDocument \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+     -d '{
+           "clientId": "your_client_id",
+           "credentialID": "your_certificate_id",
+           "SAD": "sad_token_from_authorize",
+           "documentID": "doc-123",
+           "document": "base64_encoded_document",
+           "hashAlgo": "SHA-256",
+           "signatureAttributes": {
+             "signatureType": "PAdES"
+           }
+         }'
+```
+
+**Response:**
+```json
+{
+  "transactionID": "unique-transaction-id",
+  "signedDocument": "base64_encoded_signed_document",
+  "signedDocumentDigest": "base64_digest",
+  "signatureAlgorithm": "SHA256withRSA",
+  "certificate": "base64_certificate"
+}
 ```
 
 ### Example: Asynchronous Document Signing
@@ -363,22 +421,27 @@ The application is built on Spring Boot and follows a standard layered architect
 
 - **OAuth2 Authorization Server**: Provides authentication and authorization
 - **PKCS#11 Integration**: Enables hardware token access
-- **Signing Service**: Handles digital signature operations
-- **CSC API Implementation**: Implements the CSC API v2.0 specification
+- **EU DSS Integration**: PAdES (PDF) and XAdES (XML) document signing via EU Digital Signature Services library
+- **Signing Service**: Handles digital signature operations across all three key storage backends
+- **CSC API Implementation**: Implements the CSC API v2.0 specification with SAD-based authorization
 - **Transaction Management**: Handles secure authorization for signing operations
 - **Audit Logging**: Records all signing operations for compliance
 - **Metrics Service**: Provides usage statistics
 
 ## Transaction-Based Authorization
 
-The service implements a transaction-based authorization model for secure signing:
+The service implements a transaction-based authorization model for secure signing per the CSC API v2.0 specification:
 
 1. Client authorizes a credential for signing (`/csc/v2/credentials/authorize`)
-2. Service returns a Signature Activation Data (SAD) token
-3. Client uses the SAD token in signing operations
+2. Service returns a **Signature Activation Data (SAD)** token and transaction ID
+3. Client uses the SAD token in `signHash` or `signDocument` requests (alternative to PIN)
 4. Transaction enforces constraints (number of signatures, validity period)
+5. Each signing operation decrements the remaining signature count
 
-This follows the CSC API v2.0 specification for secure remote signing.
+**Authentication options for signing endpoints:**
+- **PIN only** — traditional PKCS#11/PKCS#12 authentication
+- **SAD only** — CSC API v2.0 flow (AWS KMS does not require a PIN)
+- **SAD + PIN** — SAD for transaction authorization, PIN for HSM token access
 
 ## Docker Deployment
 
