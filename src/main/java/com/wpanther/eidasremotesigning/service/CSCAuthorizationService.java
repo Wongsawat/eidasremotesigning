@@ -249,6 +249,44 @@ public class CSCAuthorizationService {
     }
     
     /**
+     * Validates a transaction for signing using SAD token lookup
+     */
+    @Transactional
+    public TransactionAuthorization validateTransactionForSigningBySad(String clientId, String sad) {
+        TransactionAuthorization transaction = transactionRepository.findBySadAndClientId(sad, clientId)
+                .orElseThrow(() -> new SigningException("Transaction not found for the provided SAD"));
+
+        // Check if transaction has expired
+        if (transaction.getExpiresAt().isBefore(Instant.now())) {
+            throw new SigningException("Transaction has expired");
+        }
+
+        // Check if transaction is in valid state
+        if (!"AUTHORIZATION_INITIALIZED".equals(transaction.getStatus()) &&
+            !"AUTHORIZED".equals(transaction.getStatus())) {
+            throw new SigningException("Transaction is not in a valid state for signing: " + transaction.getStatus());
+        }
+
+        // Check remaining signatures
+        if (transaction.getRemainingSignatures() != null && transaction.getRemainingSignatures() <= 0) {
+            throw new SigningException("No remaining signatures allowed for this transaction");
+        }
+
+        // Update state if needed
+        if ("AUTHORIZATION_INITIALIZED".equals(transaction.getStatus())) {
+            transaction.setStatus("AUTHORIZED");
+        }
+
+        // Decrement remaining signatures if tracked
+        if (transaction.getRemainingSignatures() != null) {
+            transaction.setRemainingSignatures(transaction.getRemainingSignatures() - 1);
+        }
+
+        transactionRepository.save(transaction);
+        return transaction;
+    }
+
+    /**
      * Generates a secure Signature Activation Data token
      */
     private String generateSignatureActivationData() {

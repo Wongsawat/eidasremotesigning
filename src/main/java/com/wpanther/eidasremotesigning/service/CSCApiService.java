@@ -4,6 +4,7 @@ import com.wpanther.eidasremotesigning.dto.DigestSigningRequest;
 import com.wpanther.eidasremotesigning.dto.csc.*;
 import com.wpanther.eidasremotesigning.entity.AsyncOperation;
 import com.wpanther.eidasremotesigning.entity.SigningCertificate;
+import com.wpanther.eidasremotesigning.entity.TransactionAuthorization;
 import com.wpanther.eidasremotesigning.exception.CertificateException;
 import com.wpanther.eidasremotesigning.exception.SigningException;
 import com.wpanther.eidasremotesigning.repository.OAuth2ClientRepository;
@@ -38,10 +39,13 @@ public class CSCApiService {
     private final SigningCertificateService certificateService;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private PKCS11Service pkcs11Service;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private AWSKMSService awskmsService;
     private final EIDASComplianceService eidasComplianceService;
     private final SigningLogService signingLogService;
     private final OAuth2ClientRepository oauth2ClientRepository;
     private final AsyncOperationService asyncOperationService;
+    private final CSCAuthorizationService cscAuthorizationService;
 
     private final Executor asyncExecutor;
 
@@ -53,6 +57,7 @@ public class CSCApiService {
                           SigningLogService signingLogService,
                           OAuth2ClientRepository oauth2ClientRepository,
                           AsyncOperationService asyncOperationService,
+                          CSCAuthorizationService cscAuthorizationService,
                           @Qualifier("asyncSigningExecutor") Executor asyncExecutor,
                           @Value("${app.async.operation-expiry-minutes:30}") int operationExpiryMinutes) {
         this.certificateRepository = certificateRepository;
@@ -61,6 +66,7 @@ public class CSCApiService {
         this.signingLogService = signingLogService;
         this.oauth2ClientRepository = oauth2ClientRepository;
         this.asyncOperationService = asyncOperationService;
+        this.cscAuthorizationService = cscAuthorizationService;
         this.asyncExecutor = asyncExecutor;
         this.operationExpiryMinutes = operationExpiryMinutes;
     }
@@ -231,8 +237,19 @@ public class CSCApiService {
                 throw new SigningException("No hash values provided to sign");
             }
 
-            if (pin == null || pin.isEmpty()) {
-                throw new SigningException("PIN is required for signing operations");
+            // Either PIN or SAD is required
+            if (request.getSAD() == null && (pin == null || pin.isEmpty())) {
+                throw new SigningException("Either PIN or SAD is required for signing operations");
+            }
+
+            // Validate SAD if provided
+            TransactionAuthorization transaction = null;
+            if (request.getSAD() != null) {
+                transaction = cscAuthorizationService.validateTransactionForSigningBySad(
+                        request.getClientId(), request.getSAD());
+                if (!transaction.getCertificateId().equals(credentialID)) {
+                    throw new SigningException("Credential ID does not match authorized transaction");
+                }
             }
 
             // Determine signature type from request if specified
@@ -245,8 +262,8 @@ public class CSCApiService {
                 }
             }
 
-            // Find the certificate
-            SigningCertificate certEntity = certificateRepository.findById(credentialID)
+            // Find the certificate (with client ownership check)
+            SigningCertificate certEntity = certificateRepository.findByIdAndClientId(credentialID, request.getClientId())
                     .orElseThrow(() -> new SigningException("Certificate not found"));
 
             // Verify certificate is active
@@ -254,10 +271,26 @@ public class CSCApiService {
                 throw new SigningException("Certificate is not active");
             }
 
-            // Load certificate and private key
-            PrivateKey privateKey = certificateService.getPrivateKey(credentialID, pin);
-            X509Certificate certificate = certificateService.getCertificateWithX509(credentialID, pin)
-                    .getX509Certificate();
+            // Load certificate and private key based on storage type
+            PrivateKey privateKey = null;
+            X509Certificate certificate;
+
+            if ("AWSKMS".equals(certEntity.getStorageType())) {
+                // For AWS KMS, no private key needed
+                if (awskmsService == null) {
+                    throw new SigningException("AWS KMS is not enabled or configured");
+                }
+                certificate = certificateService.getCertificateWithX509(credentialID, null)
+                        .getX509Certificate();
+            } else {
+                // For PKCS#11 and PKCS#12, PIN is required to load the private key
+                if (pin == null || pin.isEmpty()) {
+                    throw new SigningException("PIN is required for signing with " + certEntity.getStorageType() + " token");
+                }
+                privateKey = certificateService.getPrivateKey(credentialID, pin);
+                certificate = certificateService.getCertificateWithX509(credentialID, pin)
+                        .getX509Certificate();
+            }
 
             // Validate hash algorithm
             String hashAlgo = request.getHashAlgo();
@@ -277,9 +310,13 @@ public class CSCApiService {
             eidasComplianceService.validateEIDASCompliance(validationRequest, certificate);
 
             // Determine signature algorithm
-            String signatureAlgorithm = determineSignatureAlgorithm(
-                    privateKey.getAlgorithm(),
-                    hashAlgo);
+            String keyAlgoForSig;
+            if ("AWSKMS".equals(certEntity.getStorageType())) {
+                keyAlgoForSig = awskmsService.getKeyAlgorithmType(certEntity.getKmsKeyId());
+            } else {
+                keyAlgoForSig = privateKey.getAlgorithm();
+            }
+            String signatureAlgorithm = determineSignatureAlgorithm(keyAlgoForSig, hashAlgo);
 
             // Results for multiple hash values
             String[] signatures = new String[request.getSignatureData().getHashToSign().length];
@@ -292,24 +329,35 @@ public class CSCApiService {
                 // Decode the hash
                 byte[] hashBytes = Base64.getDecoder().decode(hashToSign);
 
-                // Create signature instance with the appropriate provider
-                Signature signature;
-                if ("PKCS11".equals(certEntity.getStorageType())) {
-                    // For PKCS#11, use the HSM provider
-                    signature = Signature.getInstance(signatureAlgorithm, certEntity.getProviderName());
+                byte[] signatureBytes;
+
+                if ("AWSKMS".equals(certEntity.getStorageType())) {
+                    // For AWS KMS, use the KMS service to sign
+                    signatureBytes = awskmsService.signDigest(
+                            certEntity.getKmsKeyId(),
+                            hashBytes,
+                            hashAlgo,
+                            keyAlgoForSig);
                 } else {
-                    // For PKCS#12, use the default provider
-                    signature = Signature.getInstance(signatureAlgorithm);
+                    // Create signature instance with the appropriate provider
+                    Signature signature;
+                    if ("PKCS11".equals(certEntity.getStorageType())) {
+                        // For PKCS#11, use the HSM provider
+                        signature = Signature.getInstance(signatureAlgorithm, certEntity.getProviderName());
+                    } else {
+                        // For PKCS#12, use the default provider
+                        signature = Signature.getInstance(signatureAlgorithm);
+                    }
+
+                    // Initialize the signature
+                    signature.initSign(privateKey);
+
+                    // Update with the hash value
+                    signature.update(hashBytes);
+
+                    // Generate the signature
+                    signatureBytes = signature.sign();
                 }
-
-                // Initialize the signature
-                signature.initSign(privateKey);
-
-                // Update with the hash value
-                signature.update(hashBytes);
-
-                // Generate the signature
-                byte[] signatureBytes = signature.sign();
 
                 // Encode the signature value
                 signatures[i] = Base64.getEncoder().encodeToString(signatureBytes);

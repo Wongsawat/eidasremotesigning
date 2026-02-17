@@ -17,6 +17,11 @@ public interface TransactionAuthorizationRepository extends JpaRepository<Transa
     Optional<TransactionAuthorization> findByIdAndClientId(String id, String clientId);
     
     /**
+     * Find transaction by SAD token and client ID
+     */
+    Optional<TransactionAuthorization> findBySadAndClientId(String sad, String clientId);
+
+    /**
      * Find all transactions for a client
      */
     List<TransactionAuthorization> findByClientId(String clientId);

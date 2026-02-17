@@ -10,9 +10,23 @@ import com.wpanther.eidasremotesigning.exception.SigningException;
 import com.wpanther.eidasremotesigning.repository.AsyncOperationRepository;
 import com.wpanther.eidasremotesigning.repository.SigningCertificateRepository;
 import com.wpanther.eidasremotesigning.repository.SigningLogRepository;
+import com.wpanther.eidasremotesigning.util.DocumentFormatUtil;
 import eu.europa.esig.dss.enumerations.DigestAlgorithm;
+import eu.europa.esig.dss.enumerations.SignatureAlgorithm;
+import eu.europa.esig.dss.enumerations.SignatureLevel;
+import eu.europa.esig.dss.enumerations.SignaturePackaging;
+import eu.europa.esig.dss.model.DSSDocument;
+import eu.europa.esig.dss.model.InMemoryDocument;
+import eu.europa.esig.dss.model.SignatureValue;
 import eu.europa.esig.dss.model.TimestampBinary;
+import eu.europa.esig.dss.model.ToBeSigned;
+import eu.europa.esig.dss.model.x509.CertificateToken;
+import eu.europa.esig.dss.pades.PAdESSignatureParameters;
+import eu.europa.esig.dss.pades.signature.PAdESService;
 import eu.europa.esig.dss.service.tsp.OnlineTSPSource;
+import eu.europa.esig.dss.validation.CommonCertificateVerifier;
+import eu.europa.esig.dss.xades.XAdESSignatureParameters;
+import eu.europa.esig.dss.xades.signature.XAdESService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -21,6 +35,8 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.Signature;
@@ -52,6 +68,7 @@ public class CSCSignatureService {
     private final EIDASComplianceService eidasComplianceService;
     private final AsyncOperationRepository asyncOperationRepository;
     private final AsyncOperationService asyncOperationService;
+    private final DocumentFormatUtil documentFormatUtil;
 
     private final Executor asyncExecutor;
 
@@ -73,6 +90,7 @@ public class CSCSignatureService {
                                  EIDASComplianceService eidasComplianceService,
                                  AsyncOperationRepository asyncOperationRepository,
                                  AsyncOperationService asyncOperationService,
+                                 DocumentFormatUtil documentFormatUtil,
                                  @Qualifier("asyncSigningExecutor") Executor asyncExecutor,
                                  @org.springframework.beans.factory.annotation.Autowired(required = false) AWSKMSService awskmsService,
                                  @Value("${app.tsp.url:http://tsa.belgium.be/connect}") String tspUrl,
@@ -85,6 +103,7 @@ public class CSCSignatureService {
         this.eidasComplianceService = eidasComplianceService;
         this.asyncOperationRepository = asyncOperationRepository;
         this.asyncOperationService = asyncOperationService;
+        this.documentFormatUtil = documentFormatUtil;
         this.asyncExecutor = asyncExecutor;
         this.awskmsService = awskmsService;
         this.tspUrl = tspUrl;
@@ -153,33 +172,33 @@ public class CSCSignatureService {
             String credentialId = request.getCredentialID();
             String pin = extractPinFromRequest(request);
             String transactionId = UUID.randomUUID().toString();
-            
+
             // Check if we have a SAD or PIN
             if (request.getSAD() == null && pin == null) {
                 throw new SigningException("Either PIN or SAD is required for signing operations");
             }
-            
-            // If SAD is provided, validate transaction
+
+            // If SAD is provided, validate transaction using SAD lookup
             TransactionAuthorization transaction = null;
             if (request.getSAD() != null) {
-                transaction = cscAuthorizationService.validateTransactionForSigning(
-                        clientId, request.getSAD(), null);
-                
+                transaction = cscAuthorizationService.validateTransactionForSigningBySad(
+                        clientId, request.getSAD());
+
                 // Make sure the credential IDs match
                 if (!transaction.getCertificateId().equals(credentialId)) {
                     throw new SigningException("Credential ID does not match authorized transaction");
                 }
             }
-            
-            // Find the certificate
-            SigningCertificate certEntity = certificateRepository.findById(credentialId)
+
+            // Find the certificate (with client ownership check)
+            SigningCertificate certEntity = certificateRepository.findByIdAndClientId(credentialId, clientId)
                     .orElseThrow(() -> new SigningException("Certificate not found"));
-            
+
             // Verify certificate is active
             if (!certEntity.isActive()) {
                 throw new SigningException("Certificate is not active");
             }
-            
+
             // Get the certificate
             X509Certificate certificate;
             PrivateKey privateKey = null;  // Will be null for AWS KMS
@@ -217,13 +236,13 @@ public class CSCSignatureService {
                             .getX509Certificate();
                 }
             }
-            
+
             // Validate hash algorithm
             String hashAlgo = request.getHashAlgo();
             if (!isValidHashAlgorithm(hashAlgo)) {
                 throw new SigningException("Unsupported hash algorithm: " + hashAlgo);
             }
-            
+
             // Determine signature type from request
             DigestSigningRequest.SignatureType signatureType = DigestSigningRequest.SignatureType.XADES;
             if (request.getSignatureAttributes() != null &&
@@ -233,7 +252,7 @@ public class CSCSignatureService {
                     signatureType = DigestSigningRequest.SignatureType.PADES;
                 }
             }
-            
+
             // Create digest signing request for eIDAS compliance validation
             DigestSigningRequest validationRequest = DigestSigningRequest.builder()
                     .certificateId(credentialId)
@@ -241,28 +260,47 @@ public class CSCSignatureService {
                     .digestAlgorithm(hashAlgo)
                     .signatureType(signatureType)
                     .build();
-            
+
             // Verify eIDAS compliance
             eidasComplianceService.validateEIDASCompliance(validationRequest, certificate);
-            
-            // Determine signature algorithm
-            String signatureAlgorithm = determineSignatureAlgorithm(
-                    privateKey.getAlgorithm(),
-                    hashAlgo);
-            
+
+            // Determine signature algorithm (handle AWS KMS where privateKey is null)
+            String keyAlgoForSig;
+            if ("AWSKMS".equals(certEntity.getStorageType())) {
+                if (awskmsService == null) {
+                    throw new SigningException("AWS KMS is not enabled or configured");
+                }
+                keyAlgoForSig = awskmsService.getKeyAlgorithmType(certEntity.getKmsKeyId());
+            } else {
+                keyAlgoForSig = privateKey.getAlgorithm();
+            }
+            String signatureAlgorithm = determineSignatureAlgorithm(keyAlgoForSig, hashAlgo);
+
             // For document signing, we need to check if the document is provided or just the digest
             boolean isDocumentProvided = request.getDocument() != null && !request.getDocument().isEmpty();
             byte[] documentBytes = null;
             byte[] digestBytes = null;
-            
+
             if (isDocumentProvided) {
                 // Decode document
                 documentBytes = Base64.getDecoder().decode(request.getDocument());
-                
+
+                // Validate document format
+                String mimeType = documentFormatUtil.detectMimeType(documentBytes);
+                if ("application/pdf".equals(mimeType)) {
+                    if (!documentFormatUtil.validatePdfDocument(documentBytes)) {
+                        throw new SigningException("Invalid PDF document structure");
+                    }
+                } else if ("application/xml".equals(mimeType)) {
+                    if (!documentFormatUtil.validateXmlDocument(documentBytes)) {
+                        throw new SigningException("Invalid XML document structure");
+                    }
+                }
+
                 // Calculate digest for verification
                 MessageDigest digest = MessageDigest.getInstance(hashAlgo);
                 digestBytes = digest.digest(documentBytes);
-                
+
                 // Compare with provided digest if available
                 if (request.getDocumentDigest() != null) {
                     byte[] providedDigest = Base64.getDecoder().decode(request.getDocumentDigest());
@@ -277,86 +315,173 @@ public class CSCSignatureService {
                 }
                 digestBytes = Base64.getDecoder().decode(request.getDocumentDigest());
             }
-            
-            // Create signature
-            byte[] signatureBytes;
 
-            if ("AWSKMS".equals(certEntity.getStorageType())) {
-                // For AWS KMS, use the KMS service to sign
-                if (awskmsService == null) {
-                    throw new SigningException("AWS KMS is not enabled or configured");
-                }
+            // Signed document result (for DSS integration)
+            String signedDocumentBase64 = null;
 
-                // Get the key algorithm type
-                String keyAlgorithm = awskmsService.getKeyAlgorithmType(certEntity.getKmsKeyId());
+            if (isDocumentProvided) {
+                // Use EU DSS library for proper PAdES/XAdES document signing
+                String mimeType = documentFormatUtil.detectMimeType(documentBytes);
 
-                // Sign using AWS KMS
-                signatureBytes = awskmsService.signDigest(
-                    certEntity.getKmsKeyId(),
-                    digestBytes,
-                    hashAlgo,
-                    keyAlgorithm
-                );
-
-                log.info("Signed digest using AWS KMS key: {}", certEntity.getKmsKeyId());
-
-            } else {
-                // For PKCS#11 and PKCS#12, use standard Java cryptography
-                Signature signature;
-                if ("PKCS11".equals(certEntity.getStorageType())) {
-                    // For PKCS#11, use the HSM provider
-                    signature = Signature.getInstance(signatureAlgorithm, certEntity.getProviderName());
+                if ("application/pdf".equals(mimeType) || signatureType == DigestSigningRequest.SignatureType.PADES) {
+                    // PAdES signing
+                    signedDocumentBase64 = signDocumentWithPAdES(documentBytes, certificate, certEntity,
+                            privateKey, hashAlgo, signatureAlgorithm, keyAlgoForSig);
                 } else {
-                    // For PKCS#12, use the default provider
-                    signature = Signature.getInstance(signatureAlgorithm);
+                    // XAdES signing
+                    signedDocumentBase64 = signDocumentWithXAdES(documentBytes, certificate, certEntity,
+                            privateKey, hashAlgo, signatureAlgorithm, keyAlgoForSig);
                 }
-
-                // Initialize the signature
-                signature.initSign(privateKey);
-
-                // Update with the digest value
-                signature.update(digestBytes);
-
-                // Generate the signature
-                signatureBytes = signature.sign();
+            } else {
+                // Digest-only: sign the digest bytes and return raw signature
+                byte[] signatureBytes = signRawBytes(digestBytes, certEntity, privateKey,
+                        signatureAlgorithm, hashAlgo, keyAlgoForSig, true);
+                signedDocumentBase64 = Base64.getEncoder().encodeToString(signatureBytes);
             }
-            
-            // This would be replaced with actual document signing for PDF/XML documents
-            // Here we're just implementing the basic functionality
-            
-            // For document signing in a production environment, you would:
-            // 1. Use DSS library to create proper PAdES/XAdES signatures
-            // 2. Apply the signature to the document
-            // 3. Return the fully signed document
-            
+
             // Generate timestamp if requested
             Map<String, Object> timestampData = null;
-            if (request.getSignatureOptions() != null && 
+            if (request.getSignatureOptions() != null &&
                 request.getSignatureOptions().getServerTimestamp() != null &&
                 "true".equalsIgnoreCase(request.getSignatureOptions().getServerTimestamp())) {
-                
+
                 timestampData = createTimestampData(digestBytes, hashAlgo);
             }
-            
+
             // Log the successful signing operation
             signingLogService.logSuccessfulSigning(validationRequest, signatureAlgorithm);
-            
+
             String certificateBase64 = Base64.getEncoder().encodeToString(certificate.getEncoded());
-            
-            // Return response with signature
+
+            // Return response with signed document
             return CSCSignDocumentResponse.builder()
                     .transactionID(transactionId)
+                    .signedDocument(signedDocumentBase64)
                     .signedDocumentDigest(Base64.getEncoder().encodeToString(digestBytes))
                     .signatureAlgorithm(signatureAlgorithm)
                     .certificate(certificateBase64)
                     .timestampData(timestampData)
                     .build();
-            
+
         } catch (SigningException se) {
             throw se;
         } catch (Exception e) {
             log.error("Error in signDocument", e);
             throw new SigningException("Failed to sign document: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Signs a PDF document using EU DSS PAdES
+     */
+    private String signDocumentWithPAdES(byte[] documentBytes, X509Certificate certificate,
+            SigningCertificate certEntity, PrivateKey privateKey, String hashAlgo,
+            String signatureAlgorithm, String keyAlgoForSig) throws Exception {
+
+        PAdESSignatureParameters params = new PAdESSignatureParameters();
+        params.setSignatureLevel(SignatureLevel.PAdES_BASELINE_B);
+        params.setDigestAlgorithm(mapHashAlgorithm(hashAlgo));
+        params.setSigningCertificate(new CertificateToken(certificate));
+
+        CommonCertificateVerifier verifier = new CommonCertificateVerifier();
+        PAdESService padesService = new PAdESService(verifier);
+
+        InMemoryDocument documentToSign = new InMemoryDocument(documentBytes);
+        ToBeSigned dataToSign = padesService.getDataToSign(documentToSign, params);
+
+        // Sign the ToBeSigned bytes using the appropriate backend
+        byte[] dssSignatureBytes = signRawBytes(dataToSign.getBytes(), certEntity, privateKey,
+                signatureAlgorithm, hashAlgo, keyAlgoForSig, false);
+
+        SignatureValue signatureValue = new SignatureValue(
+                SignatureAlgorithm.getAlgorithm(params.getEncryptionAlgorithm(), params.getDigestAlgorithm()),
+                dssSignatureBytes);
+
+        DSSDocument signedDoc = padesService.signDocument(documentToSign, params, signatureValue);
+
+        return Base64.getEncoder().encodeToString(toByteArray(signedDoc));
+    }
+
+    /**
+     * Signs an XML document using EU DSS XAdES
+     */
+    private String signDocumentWithXAdES(byte[] documentBytes, X509Certificate certificate,
+            SigningCertificate certEntity, PrivateKey privateKey, String hashAlgo,
+            String signatureAlgorithm, String keyAlgoForSig) throws Exception {
+
+        XAdESSignatureParameters params = new XAdESSignatureParameters();
+        params.setSignatureLevel(SignatureLevel.XAdES_BASELINE_B);
+        params.setSignaturePackaging(SignaturePackaging.ENVELOPED);
+        params.setDigestAlgorithm(mapHashAlgorithm(hashAlgo));
+        params.setSigningCertificate(new CertificateToken(certificate));
+
+        CommonCertificateVerifier verifier = new CommonCertificateVerifier();
+        XAdESService xadesService = new XAdESService(verifier);
+
+        InMemoryDocument documentToSign = new InMemoryDocument(documentBytes);
+        ToBeSigned dataToSign = xadesService.getDataToSign(documentToSign, params);
+
+        // Sign the ToBeSigned bytes using the appropriate backend
+        byte[] dssSignatureBytes = signRawBytes(dataToSign.getBytes(), certEntity, privateKey,
+                signatureAlgorithm, hashAlgo, keyAlgoForSig, false);
+
+        SignatureValue signatureValue = new SignatureValue(
+                SignatureAlgorithm.getAlgorithm(params.getEncryptionAlgorithm(), params.getDigestAlgorithm()),
+                dssSignatureBytes);
+
+        DSSDocument signedDoc = xadesService.signDocument(documentToSign, params, signatureValue);
+
+        return Base64.getEncoder().encodeToString(toByteArray(signedDoc));
+    }
+
+    /**
+     * Signs raw bytes using the appropriate backend (AWSKMS, PKCS11, or PKCS12)
+     * @param data The bytes to sign
+     * @param certEntity The certificate entity with storage type info
+     * @param privateKey The private key (null for AWSKMS)
+     * @param signatureAlgorithm The JCA signature algorithm name
+     * @param hashAlgo The hash algorithm
+     * @param keyAlgoForSig The key algorithm type (RSA/EC)
+     * @param isDigest true if data is a pre-computed digest, false if raw data
+     */
+    private byte[] signRawBytes(byte[] data, SigningCertificate certEntity, PrivateKey privateKey,
+            String signatureAlgorithm, String hashAlgo, String keyAlgoForSig, boolean isDigest) throws Exception {
+
+        if ("AWSKMS".equals(certEntity.getStorageType())) {
+            if (awskmsService == null) {
+                throw new SigningException("AWS KMS is not enabled or configured");
+            }
+            if (isDigest) {
+                return awskmsService.signDigest(certEntity.getKmsKeyId(), data, hashAlgo, keyAlgoForSig);
+            } else {
+                return awskmsService.signData(certEntity.getKmsKeyId(), data, hashAlgo, keyAlgoForSig);
+            }
+        } else {
+            // For PKCS#11 and PKCS#12, use standard Java cryptography
+            Signature signature;
+            if ("PKCS11".equals(certEntity.getStorageType())) {
+                signature = Signature.getInstance(signatureAlgorithm, certEntity.getProviderName());
+            } else {
+                signature = Signature.getInstance(signatureAlgorithm);
+            }
+            signature.initSign(privateKey);
+            signature.update(data);
+            return signature.sign();
+        }
+    }
+
+    /**
+     * Converts a DSSDocument to a byte array
+     */
+    private byte[] toByteArray(DSSDocument document) throws Exception {
+        try (InputStream is = document.openStream();
+             ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int bytesRead;
+            while ((bytesRead = is.read(buffer)) != -1) {
+                baos.write(buffer, 0, bytesRead);
+            }
+            return baos.toByteArray();
         }
     }
     

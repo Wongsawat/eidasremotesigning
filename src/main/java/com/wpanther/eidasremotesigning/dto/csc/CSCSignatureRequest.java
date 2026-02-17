@@ -25,6 +25,8 @@ public class CSCSignatureRequest{
     
     private CSCBaseRequest.Credentials credentials;
 
+    private String SAD;
+
     @NotBlank(message = "Certificate ID is required")
     private String credentialID;
     
