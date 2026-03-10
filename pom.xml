@@ -31,7 +31,19 @@
 	<properties>
 		<java.version>17</java.version>
 		<dss.version>5.13.1</dss.version>
+		<bcfips.version>2.1.2</bcfips.version>
+		<bcpkix-fips.version>2.0.7</bcpkix-fips.version>
 	</properties>
+
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>org.bouncycastle</groupId>
+				<artifactId>bc-fips</artifactId>
+				<version>${bcfips.version}</version>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
 
 	<dependencies>
 		<!-- Spring Boot -->
@@ -136,13 +148,13 @@
 		<dependency>
 			<groupId>org.bouncycastle</groupId>
 			<artifactId>bc-fips</artifactId>
-			<version>2.1.2</version>
+			<version>${bcfips.version}</version>
 		</dependency>
 
 		<dependency>
 			<groupId>org.bouncycastle</groupId>
 			<artifactId>bcpkix-fips</artifactId>
-			<version>2.0.7</version>
+			<version>${bcpkix-fips.version}</version>
 		</dependency>
 
 		<!-- AWS SDK for KMS -->
