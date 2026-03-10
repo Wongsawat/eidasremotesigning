@@ -132,11 +132,17 @@
 			<optional>true</optional>
 		</dependency>
 
-		<!-- Bouncy Castle for cryptographic operations -->
+		<!-- Bouncy Castle FIPS for cryptographic operations -->
 		<dependency>
 			<groupId>org.bouncycastle</groupId>
-			<artifactId>bcpkix-jdk18on</artifactId>
-			<version>1.78.1</version>
+			<artifactId>bc-fips</artifactId>
+			<version>2.1.2</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.bouncycastle</groupId>
+			<artifactId>bcpkix-fips</artifactId>
+			<version>2.0.7</version>
 		</dependency>
 
 		<!-- AWS SDK for KMS -->
@@ -191,6 +197,7 @@
 				<configuration>
 					<includes>
 						<include>**/*Tests.java</include>
+						<include>**/*Test.java</include>
 					</includes>
 					<excludes>
 						<exclude>**/integration/**/*</exclude>
