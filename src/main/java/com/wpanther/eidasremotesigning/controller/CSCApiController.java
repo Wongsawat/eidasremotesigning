@@ -37,7 +37,7 @@ public class CSCApiController {
                 .name("eIDAS Remote Signing Service")
                 .region("EU")
                 .lang(List.of("en"))
-                .description("eIDAS compliant remote signing service supporting PKCS#11 hardware tokens, AWS KMS, and PKCS#12 keystores with asynchronous operation support")
+                .description("eIDAS compliant remote signing service supporting PKCS#11 hardware tokens, AWS KMS, and BCFKS keystores with asynchronous operation support")
                 .methods(List.of(
                     "credentials/list",
                     "credentials/info",

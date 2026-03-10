@@ -23,7 +23,7 @@ public class SigningCertificate {
     @Column(length = 255)
     private String description;
 
-    // Storage type - PKCS11, PKCS12, or AWSKMS
+    // Storage type - PKCS11, BCFKS, or AWSKMS
     @Column(nullable = false)
     private String storageType;
 
@@ -31,11 +31,11 @@ public class SigningCertificate {
     @Column(nullable = false)
     private String certificateAlias;
 
-    // Path to keystore file - only used if storageType is PKCS12
+    // Path to keystore file - only used if storageType is BCFKS
     @Column
     private String keystorePath;
 
-    // Password for keystore - only used if storageType is PKCS12
+    // Password for keystore - only used if storageType is BCFKS
     @Column
     private String keystorePassword;
 

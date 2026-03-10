@@ -24,7 +24,7 @@ public class CertificateDetailResponse {
     private String certificateBase64;
     private boolean active;
     private boolean selfSigned;
-    private String storageType; // PKCS11 or PKCS12
+    private String storageType; // PKCS11, BCFKS, or AWSKMS
     private Instant createdAt;
     private Instant updatedAt;
 }

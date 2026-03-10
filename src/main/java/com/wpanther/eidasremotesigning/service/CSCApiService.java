@@ -107,9 +107,15 @@ public class CSCApiService {
                             continue;
                         }
                         x509Cert = requirePkcs11Service().getCertificate(cert.getCertificateAlias(), pin);
+                    } else if ("AWSKMS".equals(cert.getStorageType())) {
+                        // For AWS KMS certs, load from stored certificate data
+                        byte[] certBytes = Base64.getDecoder().decode(cert.getCertificateData());
+                        java.io.ByteArrayInputStream bis = new java.io.ByteArrayInputStream(certBytes);
+                        java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X.509");
+                        x509Cert = (X509Certificate) cf.generateCertificate(bis);
                     } else {
-                        // For PKCS#12 certs
-                        x509Cert = certificateService.loadCertificateFromKeystore(cert);
+                        // For BCFKS certs
+                        x509Cert = certificateService.loadCertificateFromBCFKS(cert);
                     }
 
                     cscCertificates.add(mapToCscCertificateInfo(cert, x509Cert));
@@ -155,9 +161,15 @@ public class CSCApiService {
                     throw new CertificateException("PIN is required for PKCS#11 certificate access");
                 }
                 x509Cert = requirePkcs11Service().getCertificate(cert.getCertificateAlias(), pin);
+            } else if ("AWSKMS".equals(cert.getStorageType())) {
+                // For AWS KMS certs, load from stored certificate data
+                byte[] certBytes = Base64.getDecoder().decode(cert.getCertificateData());
+                java.io.ByteArrayInputStream bis = new java.io.ByteArrayInputStream(certBytes);
+                java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X.509");
+                x509Cert = (X509Certificate) cf.generateCertificate(bis);
             } else {
-                // For PKCS#12
-                x509Cert = certificateService.loadCertificateFromKeystore(cert);
+                // For BCFKS certs
+                x509Cert = certificateService.loadCertificateFromBCFKS(cert);
             }
 
             return mapToCscCertificateInfo(cert, x509Cert);
@@ -283,7 +295,7 @@ public class CSCApiService {
                 certificate = certificateService.getCertificateWithX509(credentialID, null)
                         .getX509Certificate();
             } else {
-                // For PKCS#11 and PKCS#12, PIN is required to load the private key
+                // For PKCS#11 and BCFKS, PIN is required to load the private key
                 if (pin == null || pin.isEmpty()) {
                     throw new SigningException("PIN is required for signing with " + certEntity.getStorageType() + " token");
                 }
@@ -345,8 +357,8 @@ public class CSCApiService {
                         // For PKCS#11, use the HSM provider
                         signature = Signature.getInstance(signatureAlgorithm, certEntity.getProviderName());
                     } else {
-                        // For PKCS#12, use the default provider
-                        signature = Signature.getInstance(signatureAlgorithm);
+                        // For BCFKS, use the BCFIPS provider
+                        signature = Signature.getInstance(signatureAlgorithm, "BCFIPS");
                     }
 
                     // Initialize the signature

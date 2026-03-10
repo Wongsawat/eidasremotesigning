@@ -80,7 +80,7 @@ public class CSCAuthorizationService {
             log.debug("Created transaction authorization: {}", transactionId);
             
             // For PKCS#11 tokens, we use explicit authentication
-            // For PKCS#12, we could use implicit if the client has already provided a password
+            // For BCFKS, we could use implicit if the client has already provided a password
             String authMode = "PKCS11".equals(certificate.getStorageType()) ? "explicit" : "implicit";
             
             // Build and return response

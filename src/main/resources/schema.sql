@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS oauth2_client_grant_types (
 CREATE TABLE IF NOT EXISTS signing_certificates (
     id VARCHAR(255) PRIMARY KEY,
     description VARCHAR(255),
-    storage_type VARCHAR(10) NOT NULL, -- PKCS11 or PKCS12
+    storage_type VARCHAR(10) NOT NULL, -- BCFKS, PKCS11, or AWSKMS
     certificate_alias VARCHAR(255) NOT NULL,
     keystore_path VARCHAR(500),
     keystore_password VARCHAR(255),

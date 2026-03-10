@@ -20,5 +20,5 @@ public class CertificateSummary {
     private Instant notAfter;
     private boolean active;
     private boolean selfSigned;
-    private String storageType; // PKCS11 or PKCS12
+    private String storageType; // PKCS11, BCFKS, or AWSKMS
 }
