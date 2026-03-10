@@ -435,7 +435,7 @@ public class CSCSignatureService {
     }
 
     /**
-     * Signs raw bytes using the appropriate backend (AWSKMS, PKCS11, or PKCS12)
+     * Signs raw bytes using the appropriate backend (AWSKMS, PKCS11, or BCFKS)
      * @param data The bytes to sign
      * @param certEntity The certificate entity with storage type info
      * @param privateKey The private key (null for AWSKMS)
@@ -457,12 +457,13 @@ public class CSCSignatureService {
                 return awskmsService.signData(certEntity.getKmsKeyId(), data, hashAlgo, keyAlgoForSig);
             }
         } else {
-            // For PKCS#11 and PKCS#12, use standard Java cryptography
+            // For PKCS#11 and BCFKS, use Java cryptography with the appropriate provider
             Signature signature;
             if ("PKCS11".equals(certEntity.getStorageType())) {
                 signature = Signature.getInstance(signatureAlgorithm, certEntity.getProviderName());
             } else {
-                signature = Signature.getInstance(signatureAlgorithm);
+                // BCFKS: use BCFIPS provider for FIPS-compliant signing
+                signature = Signature.getInstance(signatureAlgorithm, "BCFIPS");
             }
             signature.initSign(privateKey);
             signature.update(data);
