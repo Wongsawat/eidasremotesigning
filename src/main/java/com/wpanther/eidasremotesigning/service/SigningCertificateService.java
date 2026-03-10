@@ -1,8 +1,5 @@
 package com.wpanther.eidasremotesigning.service;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
@@ -48,6 +45,9 @@ public class SigningCertificateService {
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private AWSKMSService awskmsService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private BCFKSService bcfksService;
 
     @Value("${app.keystore.base-path:/app/keystores}")
     private String keystoreBasePath;
@@ -246,14 +246,14 @@ public class SigningCertificateService {
                 throw new CertificateException("Failed to load AWS KMS certificate: " + e.getMessage(), e);
             }
         } else {
-            // For PKCS#12, load from file
+            // For BCFKS, load from file
             try {
-                x509Cert = loadCertificateFromKeystore(certificate);
+                x509Cert = loadCertificateFromBCFKS(certificate);
             } catch (Exception e) {
                 throw new CertificateException("Failed to load certificate: " + e.getMessage(), e);
             }
         }
-        
+
         CertificateDetailResponse detailResponse = mapToDetailResponse(certificate, x509Cert);
         return CertificateResponse.builder()
             .detailResponse(detailResponse)
@@ -286,14 +286,25 @@ public class SigningCertificateService {
                 throw new CertificateException("PIN is required to access PKCS#11 token");
             }
             x509Cert = requirePkcs11Service().getCertificate(certificate.getCertificateAlias(), pin);
-        } else {
+        } else if ("AWSKMS".equals(certificate.getStorageType())) {
+            // For AWS KMS, load from stored certificate data
             try {
-                x509Cert = loadCertificateFromKeystore(certificate);
+                byte[] certBytes = Base64.getDecoder().decode(certificate.getCertificateData());
+                java.io.ByteArrayInputStream bis = new java.io.ByteArrayInputStream(certBytes);
+                java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X.509");
+                x509Cert = (X509Certificate) cf.generateCertificate(bis);
+            } catch (Exception e) {
+                throw new CertificateException("Failed to load AWS KMS certificate: " + e.getMessage(), e);
+            }
+        } else {
+            // For BCFKS, load from file
+            try {
+                x509Cert = loadCertificateFromBCFKS(certificate);
             } catch (Exception e) {
                 throw new CertificateException("Failed to load certificate: " + e.getMessage(), e);
             }
         }
-        
+
         return mapToDetailResponse(certificate, x509Cert);
     }
     
@@ -303,16 +314,9 @@ public class SigningCertificateService {
         SigningCertificate certificate = certificateRepository.findByIdAndClientId(certificateId, clientId)
             .orElseThrow(() -> new CertificateException("Certificate not found"));
         
-        // For PKCS#12, delete the keystore file
-        if ("PKCS12".equals(certificate.getStorageType()) && certificate.getKeystorePath() != null) {
-            try {
-                File keystoreFile = new File(certificate.getKeystorePath());
-                if (keystoreFile.exists()) {
-                    keystoreFile.delete();
-                }
-            } catch (Exception e) {
-                log.warn("Could not delete keystore file: {}", e.getMessage());
-            }
+        // For BCFKS, delete the keystore file
+        if ("BCFKS".equals(certificate.getStorageType()) && certificate.getKeystorePath() != null) {
+            bcfksService.deleteKeystore(certificate.getKeystorePath());
         }
         
         // For PKCS#11, we only remove the association, not the certificate itself
@@ -369,9 +373,19 @@ public class SigningCertificateService {
                     // No PIN provided, create minimal summary
                     return createMinimalSummary(cert);
                 }
+            } else if ("AWSKMS".equals(cert.getStorageType())) {
+                // For AWS KMS certs, load from stored certificate data
+                if (cert.getCertificateData() != null) {
+                    byte[] certBytes = Base64.getDecoder().decode(cert.getCertificateData());
+                    java.io.ByteArrayInputStream bis = new java.io.ByteArrayInputStream(certBytes);
+                    java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X.509");
+                    x509Cert = (X509Certificate) cf.generateCertificate(bis);
+                } else {
+                    return createMinimalSummary(cert);
+                }
             } else {
-                // For PKCS#12, load from file
-                x509Cert = loadCertificateFromKeystore(cert);
+                // For BCFKS, load from file
+                x509Cert = loadCertificateFromBCFKS(cert);
             }
             
             boolean selfSigned = x509Cert.getSubjectX500Principal().equals(x509Cert.getIssuerX500Principal());
@@ -404,18 +418,14 @@ public class SigningCertificateService {
     }
     
     /**
-     * Loads an X509Certificate from a PKCS12 keystore
+     * Loads an X509Certificate from a BCFKS keystore
      */
-    public X509Certificate loadCertificateFromKeystore(SigningCertificate cert) throws Exception {
-        if (!"PKCS12".equals(cert.getStorageType())) {
-            throw new CertificateException("Certificate is not stored in PKCS12 format");
+    public X509Certificate loadCertificateFromBCFKS(SigningCertificate cert) throws Exception {
+        if (!"BCFKS".equals(cert.getStorageType())) {
+            throw new CertificateException("Certificate is not stored in BCFKS format");
         }
-        
-        KeyStore keyStore = KeyStore.getInstance("PKCS12");
-        try (FileInputStream fis = new FileInputStream(cert.getKeystorePath())) {
-            keyStore.load(fis, cert.getKeystorePassword().toCharArray());
-            return (X509Certificate) keyStore.getCertificate(cert.getCertificateAlias());
-        }
+        return bcfksService.loadCertificate(
+                cert.getKeystorePath(), cert.getCertificateAlias(), cert.getKeystorePassword());
     }
     
     /**
@@ -424,7 +434,7 @@ public class SigningCertificateService {
      *
      * @param certificateId The certificate ID
      * @param pin The PIN for PKCS#11 token
-     * @return The private key (only for PKCS11 and PKCS12)
+     * @return The private key (only for PKCS11 and BCFKS)
      */
     public PrivateKey getPrivateKey(String certificateId, String pin) {
         try {
@@ -442,21 +452,11 @@ public class SigningCertificateService {
                     throw new CertificateException("PIN is required to access PKCS#11 token");
                 }
                 return requirePkcs11Service().getPrivateKey(cert.getCertificateAlias(), pin);
+            } else if ("BCFKS".equals(cert.getStorageType())) {
+                return bcfksService.getPrivateKey(
+                        cert.getKeystorePath(), cert.getCertificateAlias(), cert.getKeystorePassword());
             } else {
-                // For PKCS#12, get from file
-                KeyStore keyStore = KeyStore.getInstance("PKCS12");
-                try (FileInputStream fis = new FileInputStream(cert.getKeystorePath())) {
-                    keyStore.load(fis, cert.getKeystorePassword().toCharArray());
-                    PrivateKey privateKey = (PrivateKey) keyStore.getKey(
-                        cert.getCertificateAlias(),
-                        cert.getKeystorePassword().toCharArray());
-
-                    if (privateKey == null) {
-                        throw new CertificateException("Private key not found in keystore");
-                    }
-
-                    return privateKey;
-                }
+                throw new CertificateException("Unsupported storage type for private key retrieval: " + cert.getStorageType());
             }
         } catch (CertificateException ce) {
             throw ce;
